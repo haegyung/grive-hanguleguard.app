@@ -121,11 +121,24 @@ open GriveHangulGuard.app
 
 ## 🚀 다른 맥에 설치하는 방법 (초간단)
 
-### 방법 A. 패키지 다운로드 후 원클릭 설치
-이 저장소(또는 폴더)를 내려받은 뒤 터미널에서 다음 명령어를 실행합니다:
+### 방법 A. 공식 공증 DMG 다운로드 (가장 추천 🍏)
+
+GitHub Releases에서 Apple 공식 공증 및 Developer ID 서명이 완료된 설치 파일을 내려받아 즉시 사용합니다:
+
+👉 **[공식 릴리스 페이지 바로가기 (v1.0.2)](https://github.com/haegyung/grive-hanguleguard.app/releases/tag/v1.0.2)**  
+* **[GriveHangulGuard.dmg (드래그 앤 드롭 설치 디스크)](https://github.com/haegyung/grive-hanguleguard.app/releases/download/v1.0.2/GriveHangulGuard.dmg)**
+* **[GriveHangulGuard-v1.0.2-notarized.zip (독립형 앱 압축)](https://github.com/haegyung/grive-hanguleguard.app/releases/download/v1.0.2/GriveHangulGuard-v1.0.2-notarized.zip)**
+
+> 🛡️ **Gatekeeper 공인 완료**: Apple Notary Service 공증 및 Hardened Runtime이 적용되어, "확인되지 않은 개발자" 경고창 없이 더블 클릭으로 즉시 실행됩니다.
+
+---
+
+### 방법 B. 소스코드 저장소 클론 후 원클릭 설치
+개발 환경이거나 터미널 스크립트로 직접 시스템에 상주시키려면:
 
 ```bash
-cd macos-hangul-nfc-cleaner
+git clone https://github.com/haegyung/grive-hanguleguard.app.git
+cd grive-hanguleguard.app
 ./install.sh
 ```
 

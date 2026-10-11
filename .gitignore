@@ -4,5 +4,6 @@
 .__nfc_tmp_*
 /build/
 .build/
+dist/
 .AppleDouble
 .LSOverride

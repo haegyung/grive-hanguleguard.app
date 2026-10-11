@@ -105,10 +105,12 @@ echo -e "${BOLD}[단계 3/6] 🔗 터미널 CLI 명령어 연결 중 (~/.local/b
 ln -sf "$BIN_OUTPUT" "$LOCAL_BIN/winzip"
 ln -sf "$BIN_OUTPUT" "$LOCAL_BIN/fix-korean-jamo"
 ln -sf "$BIN_OUTPUT" "$LOCAL_BIN/nfc-watcher"
+ln -sf "$BIN_OUTPUT" "$LOCAL_BIN/grive-scan"
 echo -e "  ${GREEN}✔${RESET} 명령어 심볼릭 링크 생성 완료:"
 echo -e "     • ${CYAN}winzip${RESET}            : 윈도우 호환 클린 ZIP 압축"
 echo -e "     • ${CYAN}fix-korean-jamo${RESET}   : 한글 자모 일괄 복구"
 echo -e "     • ${CYAN}nfc-watcher${RESET}       : 실시간 데몬 직접 실행/관리"
+echo -e "     • ${CYAN}grive-scan${RESET}        : 기존 파일/외장하드 한글 자모 전수 수복"
 echo ""
 
 # ------------------------------------------------------------------------------
@@ -142,6 +144,7 @@ echo -e "${BOLD}[단계 5/6] 🔄 시스템 상주 서비스(LaunchAgent) 등록
 
 # Stop existing service if running
 launchctl bootout "gui/$CURRENT_UID/$PLIST_LABEL" 2>/dev/null || launchctl unload "$PLIST_TARGET" 2>/dev/null || true
+sleep 0.5
 
 # Generate plist from template
 sed "s|{{HOME}}|$HOME|g" "$PROJECT_DIR/launchd/$PLIST_LABEL.plist.template" > "$PLIST_TARGET"
@@ -216,7 +219,7 @@ echo -e "${GREEN}${BOLD}                 ✨ 모든 설치와 시스템 등록�
 echo -e "${CYAN}============================================================================${RESET}"
 echo -e " 1. ${BOLD}실시간 자동 감시:${RESET} 바탕화면/다운로드/문서 폴더의 자모 분리를 상시 자동 방지합니다."
 echo -e " 2. ${BOLD}Finder 우클릭 메뉴:${RESET} 파일 선택 후 [빠른 동작] ➔ '한글 자모 결합' / '윈도우 호환 압축'"
-echo -e " 3. ${BOLD}터미널 명령어:${RESET} 'winzip <경로>', 'fix-korean-jamo <경로>'"
+echo -e " 3. ${BOLD}터미널 명령어:${RESET} 'winzip <경로>', 'fix-korean-jamo <경로>', 'grive-scan <경로>'"
 echo -e " 4. ${BOLD}로그 모니터링:${RESET} tail -f ~/.local/state/finder-tools/nfc_watcher.log"
 echo -e "${CYAN}============================================================================${RESET}"
 echo ""

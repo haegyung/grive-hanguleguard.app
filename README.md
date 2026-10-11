@@ -54,6 +54,14 @@ open GriveHangulGuard.app
 * macOS 기본 `ditto`와 `--norsrc`로 `.DS_Store`와 `__MACOSX` 찌꺼기를 원천 차단합니다.
 * 자체 **Zip 바이너리 패처**가 ZIP Local/Central Directory 헤더에 `0x0800` (Language Encoding Flag) 비트를 강제 각인하여, 윈도우 탐색기 및 모든 서드파티 압축기에서 한글이 외계어로 깨지는 현상을 100% 방지합니다.
 
+### 5. 기존 파일 전수 수복 (Deep Recursive Scan)
+* **디스크/외장하드 전수 탐색**: 실시간 감시 시작 전 이미 저장되어 있던 대량의 NFD 자모 분리 파일이나 외장 드라이브를 일괄 탐색하여 온전한 NFC로 결합합니다.
+* **Bottom-up 안전 디렉터리 순회**: 하위 파일 및 깊은 디렉터리부터 먼저 수복한 뒤 상위 디렉터리를 갱신하여 경로 단절을 원천 차단합니다.
+* **미리보기 모드 지원 (`--dry-run`)**: 실제 파일명을 변경하기 전 대상 파일 목록과 변환 예상 결과를 안전하게 미리 검토할 수 있습니다.
+* **터미널 및 GUI 앱 동시 지원**:
+  * GUI 앱: `기본 폴더 전수 수복` 또는 `특정 폴더 / 외장하드 선택...` 버튼 클릭
+  * 터미널: `grive-scan /Volumes/ExternalDrive` (미리보기: `grive-scan --dry-run <경로>`)
+
 ---
 
 ## 🚀 다른 맥에 설치하는 방법 (초간단)
@@ -72,10 +80,11 @@ make install
 ```
 
 > **설치 스크립트(`install.sh`)가 자동으로 처리하는 내용:**
-> 1. Swift 컴파일러가 있으면 최신 최적화 바이너리 즉시 빌드 (없으면 동봉된 바이너리 사용)
-> 2. `~/.local/bin/finder-tools/`에 도구 배치 및 `~/.local/bin/`에 심볼릭 링크 생성
+> 1. Swift 컴파일러가 있으면 최신 최적화 바이너리 즉시 빌드 및 Ad-hoc 코드 서명
+> 2. `~/.local/bin/finder-tools/`에 도구 배치 및 `~/.local/bin/`에 심볼릭 링크(`winzip`, `fix-korean-jamo`, `nfc-watcher`, `grive-scan`) 생성
 > 3. Finder 우클릭 [빠른 동작] 메뉴 2종 자동 설치 및 서비스 캐시 갱신
-> 4. `launchd` 백그라운드 데몬 등록 및 즉시 가동 (`com.coos.korean-nfc-normalizer`)
+> 4. `launchd` 백그라운드 데몬 현대식 등록 및 즉시 가동 (`com.grive.hangulguard`)
+> 5. 실시간 자가 진단(Self-Test) 자동 수행
 
 ---
 
@@ -96,8 +105,8 @@ make install
 ```
 * 변경 후 데몬 재시작:
 ```bash
-launchctl unload ~/Library/LaunchAgents/com.coos.korean-nfc-normalizer.plist
-launchctl load -w ~/Library/LaunchAgents/com.coos.korean-nfc-normalizer.plist
+launchctl bootout gui/$(id -u)/com.grive.hangulguard
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.grive.hangulguard.plist
 ```
 
 ---
@@ -108,7 +117,7 @@ launchctl load -w ~/Library/LaunchAgents/com.coos.korean-nfc-normalizer.plist
 
 ```bash
 # 데몬 프로세스 상주 여부 확인
-launchctl list | grep korean-nfc
+launchctl list | grep hangulguard
 
 # 실시간 파일 변환 로그 스트리밍
 tail -f ~/.local/state/finder-tools/nfc_watcher.log
@@ -135,21 +144,25 @@ make uninstall
 
 ```
 macos-hangul-nfc-cleaner/
-├── README.md                 # 프로젝트 문서
-├── Makefile                  # make 빌드/설치 지원
-├── install.sh                # 원클릭 멱등 설치 스크립트
-├── uninstall.sh              # 완전 제거 스크립트
+├── README.md                           # 프로젝트 문서
+├── Makefile                            # make 빌드/설치 지원
+├── install.sh                          # 원클릭 6단계 멱등 설치 스크립트
+├── uninstall.sh                        # 완전 제거 스크립트
+├── GriveHangulGuard.app                # 네이티브 GUI 관리 앱
+├── app/
+│   ├── build_app.sh                    # SwiftUI 앱 번들 컴파일러
+│   └── src/main.swift                  # SwiftUI 관리 인터페이스
 ├── bin/
-│   └── nfc_watcher           # 컴파일된 Swift 네이티브 arm64 바이너리
+│   └── nfc_watcher                     # 컴파일된 Swift 네이티브 arm64 바이너리
 ├── src/
-│   ├── nfc_watcher.swift     # Swift FSEvents 실시간 감시 데몬 소스
-│   ├── winzip.py             # 윈도우 호환 클린 ZIP 압축 CLI
-│   └── fix_korean_jamo.py    # APFS 2단계 한글 자모 복구 CLI
+│   ├── nfc_watcher.swift               # Swift FSEvents 데몬 + Scan + Fix + Zip 올인원 엔진
+│   ├── winzip.py                       # 윈도우 호환 클린 ZIP CLI (호환용)
+│   └── fix_korean_jamo.py              # APFS 2단계 한글 복구 CLI (호환용)
 ├── services/
 │   ├── 윈도우 호환 압축 (ZIP).workflow
 │   └── 한글 자모 결합 (NFC 변환).workflow
 └── launchd/
-    └── com.coos.korean-nfc-normalizer.plist.template
+    └── com.grive.hangulguard.plist.template
 ```
 
 ---

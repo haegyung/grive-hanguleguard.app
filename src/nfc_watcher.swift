@@ -252,6 +252,100 @@ func runFixCommand(args: [String]) {
     }
 }
 
+// MARK: - Subcommand: Scan (Deep Recursive Full Normalizer)
+
+func runScanCommand(args: [String]) {
+    var isDryRun = false
+    var targetPaths = [String]()
+    
+    for arg in args {
+        if arg == "--dry-run" || arg == "-n" {
+            isDryRun = true
+        } else {
+            targetPaths.append(arg)
+        }
+    }
+    
+    if targetPaths.isEmpty {
+        targetPaths = loadMonitoredPaths()
+    }
+    
+    print("============================================================")
+    print("  🔍 Grive한글가드: 기존 파일 한글 자모 전수 스캔 및 수복")
+    if isDryRun {
+        print("  ⚠️  [미리보기 모드] 실제 파일명은 변경되지 않습니다.")
+    }
+    print("============================================================")
+    
+    var totalScanned = 0
+    var totalFixed = 0
+    let startTime = Date()
+    
+    for rawPath in targetPaths {
+        let path = (rawPath as NSString).expandingTildeInPath
+        guard fm.fileExists(atPath: path) else {
+            print("❌ 경로가 존재하지 않습니다: \(path)")
+            continue
+        }
+        
+        print("\n📂 대상 디렉터리: \(path)")
+        
+        let rootURL = URL(fileURLWithPath: path)
+        guard let enumerator = fm.enumerator(
+            at: rootURL,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsPackageDescendants]
+        ) else { continue }
+        
+        var collected = [String]()
+        for case let fileURL as URL in enumerator {
+            let p = fileURL.path
+            if shouldIgnore(path: p) { continue }
+            collected.append(p)
+            if collected.count % 500 == 0 {
+                print("\r  📂 \(collected.count)개 파일 탐색 중...", terminator: "")
+                fflush(stdout)
+            }
+        }
+        
+        // Bottom-up traversal: 자식 파일/폴더를 먼저 처리하여 상위 디렉터리 이름 변경 시 경로 단절 방지
+        collected.sort { $0.components(separatedBy: "/").count > $1.components(separatedBy: "/").count }
+        
+        for (idx, p) in collected.enumerated() {
+            totalScanned += 1
+            let name = (p as NSString).lastPathComponent
+            if isDecomposed(name) {
+                let nfc = (name as NSString).precomposedStringWithCanonicalMapping
+                totalFixed += 1
+                if isDryRun {
+                    print("\r  🔍 [발견] '\(name)' ➔ '\(nfc)'")
+                } else {
+                    if safeRenameToNFC(path: p) {
+                        print("\r  ✅ [수복] '\(name)' ➔ '\(nfc)'")
+                    }
+                }
+            }
+            if idx % 200 == 0 {
+                print("\r  🔍 \(totalScanned)/\(collected.count)개 항목 검사 중 (자모 분리: \(totalFixed)건)...", terminator: "")
+                fflush(stdout)
+            }
+        }
+    }
+    
+    let duration = String(format: "%.2f", Date().timeIntervalSince(startTime))
+    print("\n============================================================")
+    print("  🎉 스캔 완료 (\(duration)초) | 검사 항목: \(totalScanned)개 | \(isDryRun ? "발견: " : "수복 완료: ")\(totalFixed)개")
+    print("============================================================")
+    
+    if !isDryRun {
+        showNotification(
+            title: "기존 파일 자모 전수 수복 완료",
+            subtitle: "총 \(totalFixed)개 항목 정상 결합됨",
+            message: "검사 항목: \(totalScanned)개 (소요시간: \(duration)초)"
+        )
+    }
+}
+
 // MARK: - Subcommand: Zip (Windows-Compatible Clean Compressor)
 
 func getUniqueZipPath(basePath: String) -> String {
@@ -507,6 +601,10 @@ func main() {
         runFixCommand(args: Array(args.dropFirst()))
         return
     }
+    if invokedName == "grive-scan" || invokedName == "hangul-scan" {
+        runScanCommand(args: Array(args.dropFirst()))
+        return
+    }
 
     if args.count <= 1 {
         runDaemonCommand()
@@ -521,6 +619,8 @@ func main() {
         runDaemonCommand()
     case "fix", "--fix":
         runFixCommand(args: remainingArgs)
+    case "scan", "--scan":
+        runScanCommand(args: remainingArgs)
     case "zip", "--zip":
         runZipCommand(args: remainingArgs)
     case "help", "--help", "-h":
@@ -528,6 +628,7 @@ func main() {
         GriveHangulGuard macOS Universal Engine 🍏🇰🇷
         Usage:
           nfc_watcher [daemon]              Run real-time background normalizer
+          nfc_watcher scan [paths...]       Deep scan & recover existing files (add --dry-run for preview)
           nfc_watcher fix <paths...>        Batch normalize NFD Hangul filenames to NFC
           nfc_watcher zip <paths...>        Create clean, Windows-compatible zip without junk
           nfc_watcher --help                Show this help message

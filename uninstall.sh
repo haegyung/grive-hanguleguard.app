@@ -41,6 +41,7 @@ echo "🔗 터미널 CLI 심볼릭 링크 제거 중..."
 rm -f "$LOCAL_BIN/winzip"
 rm -f "$LOCAL_BIN/fix-korean-jamo"
 rm -f "$LOCAL_BIN/nfc-watcher"
+rm -f "$LOCAL_BIN/grive-scan"
 
 # 4. Remove Binary & Script directory
 if [[ -d "$TARGET_BIN_DIR" ]]; then

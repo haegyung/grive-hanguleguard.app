@@ -9,7 +9,9 @@ class AppStateManager: ObservableObject {
     @Published var logLines: [String] = []
     @Published var statusMessage: String = "상태를 확인하고 있습니다..."
     @Published var testResult: String? = nil
+    @Published var scanResult: String? = nil
     @Published var isWorking: Bool = false
+    @Published var isScanning: Bool = false
     
     private let logURL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".local/state/finder-tools/nfc_watcher.log")
@@ -178,6 +180,56 @@ class AppStateManager: ObservableObject {
         }
     }
     
+    func runDeepScan(targetPath: String?) {
+        isScanning = true
+        scanResult = "기존 파일 전수 스캔 및 자모 수복을 진행 중입니다..."
+        
+        DispatchQueue.global(qos: .userInitiated).async {
+            let binaryPath = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".local/bin/finder-tools/nfc_watcher").path
+            
+            let task = Process()
+            let pipe = Pipe()
+            task.executableURL = URL(fileURLWithPath: binaryPath)
+            
+            if let path = targetPath {
+                task.arguments = ["scan", path]
+            } else {
+                task.arguments = ["scan"]
+            }
+            task.standardOutput = pipe
+            task.standardError = pipe
+            
+            try? task.run()
+            task.waitUntilExit()
+            
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let output = String(data: data, encoding: .utf8) ?? ""
+            
+            let lines = output.components(separatedBy: "\n")
+            let summary = lines.first(where: { $0.contains("스캔 완료") }) ?? "스캔이 완료되었습니다."
+            
+            DispatchQueue.main.async {
+                self.isScanning = false
+                self.scanResult = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+                self.refreshState()
+            }
+        }
+    }
+    
+    func selectFolderAndScan() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "이 폴더 전수 수복"
+        panel.message = "기존 한글 자모 분리를 일괄 결합할 폴더를 선택하세요."
+        
+        if panel.runModal() == .OK, let selectedURL = panel.url {
+            runDeepScan(targetPath: selectedURL.path)
+        }
+    }
+    
     private func shell(_ command: String) -> String {
         let task = Process()
         let pipe = Pipe()
@@ -311,6 +363,62 @@ struct ContentView: View {
                             Text(res)
                                 .font(.callout)
                                 .foregroundColor(res.contains("성공") ? .green : .orange)
+                                .padding(8)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(RoundedRectangle(cornerRadius: 6).fill(Color(NSColor.windowBackgroundColor)))
+                        }
+                    }
+                    .padding(16)
+                    .background(RoundedRectangle(cornerRadius: 10).fill(Color(NSColor.controlBackgroundColor)))
+                    
+                    // Deep Scan Card (기존 파일 전수 수복)
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Image(systemName: "wand.and.stars")
+                                .font(.title3)
+                                .foregroundColor(.purple)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("기존 생성 파일 자모 전수 수복 (Deep Scan)")
+                                    .font(.headline)
+                                Text("실시간 감시 전 이미 분리된 파일(ㅂㅗㄱㅗㅅㅓ)이나 외장하드의 한글을 일괄 결합합니다.")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        
+                        HStack(spacing: 12) {
+                            Button(action: {
+                                state.runDeepScan(targetPath: nil)
+                            }) {
+                                Label("기본 폴더 전수 수복", systemImage: "sparkles.rectangle.stack")
+                            }
+                            .controlSize(.regular)
+                            .disabled(state.isScanning || state.isWorking)
+                            
+                            Button(action: {
+                                state.selectFolderAndScan()
+                            }) {
+                                Label("특정 폴더 / 외장하드 선택...", systemImage: "folder.badge.gearshape")
+                            }
+                            .controlSize(.regular)
+                            .disabled(state.isScanning || state.isWorking)
+                        }
+                        
+                        if state.isScanning {
+                            HStack(spacing: 10) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("하위 디렉터리 내 모든 파일을 탐색하여 자모를 수복하고 있습니다...")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.top, 4)
+                        }
+                        
+                        if let res = state.scanResult {
+                            Text(res)
+                                .font(.callout)
+                                .foregroundColor(.primary)
                                 .padding(8)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .background(RoundedRectangle(cornerRadius: 6).fill(Color(NSColor.windowBackgroundColor)))

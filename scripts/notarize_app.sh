@@ -138,7 +138,7 @@ echo -e "  ${GREEN}✔${RESET} DMG 파일에도 Apple 공증 티켓 부착 완�
 # 7. 최종 배포용 ZIP 생성 및 보고서
 # ------------------------------------------------------------------------------
 echo -e "\n${BOLD}[7/7] 📋 최종 배포 아티팩트 정리...${RESET}"
-ZIP_OUTPUT="$DIST_DIR/GriveHangulGuard-v1.0.3-notarized.zip"
+ZIP_OUTPUT="$DIST_DIR/GriveHangulGuard-v1.0.4-notarized.zip"
 rm -f "$ZIP_OUTPUT"
 ditto -c -k --keepParent "$APP_BUNDLE" "$ZIP_OUTPUT"
 

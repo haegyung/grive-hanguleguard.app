@@ -561,11 +561,14 @@ func runFixCommand(args: [String]) {
 
 func runScanCommand(args: [String]) {
     var isDryRun = false
+    var isGuiProgress = false
     var targetPaths = [String]()
     
     for arg in args {
         if arg == "--dry-run" || arg == "-n" {
             isDryRun = true
+        } else if arg == "--gui-progress" {
+            isGuiProgress = true
         } else {
             targetPaths.append(arg)
         }
@@ -575,13 +578,15 @@ func runScanCommand(args: [String]) {
         targetPaths = loadMonitoredPaths()
     }
     
-    print("============================================================")
-    print("  🔍 Grive한글가드: 기존 파일 한글 자모 전수 스캔 및 감사 장부 기록")
-    if isDryRun {
-        print("  ⚠️  [미리보기 모드] 실제 파일명은 변경되지 않습니다.")
+    if !isGuiProgress {
+        print("============================================================")
+        print("  🔍 Grive한글가드: 기존 파일 한글 자모 전수 스캔 및 감사 장부 기록")
+        if isDryRun {
+            print("  ⚠️  [미리보기 모드] 실제 파일명은 변경되지 않습니다.")
+        }
+        print("  💾 로컬 감사 DB: \(dbFileURL.path)")
+        print("============================================================")
     }
-    print("  💾 로컬 감사 DB: \(dbFileURL.path)")
-    print("============================================================")
     
     var totalScanned = 0
     var totalFixed = 0
@@ -591,12 +596,19 @@ func runScanCommand(args: [String]) {
     for rawPath in targetPaths {
         let path = (rawPath as NSString).expandingTildeInPath
         guard fm.fileExists(atPath: path) else {
-            print("❌ 경로가 존재하지 않습니다: \(path)")
+            if isGuiProgress {
+                print("[STREAM:ERROR:경로가 존재하지 않습니다: \(path)]")
+                fflush(stdout)
+            } else {
+                print("❌ 경로가 존재하지 않습니다: \(path)")
+            }
             continue
         }
         
         let sessionId = AuditDatabase.shared.startSession(targetPath: path, isDryRun: isDryRun)
-        print("\n📂 대상 디렉터리: \(path) (세션: \(sessionId.prefix(8)))")
+        if !isGuiProgress {
+            print("\n📂 대상 디렉터리: \(path) (세션: \(sessionId.prefix(8)))")
+        }
         
         if !isDryRun {
             recoverOrphanTempFiles(at: path)
@@ -614,10 +626,22 @@ func runScanCommand(args: [String]) {
             let p = fileURL.path
             if shouldIgnore(path: p) { continue }
             collected.append(p)
-            if collected.count % 500 == 0 {
-                print("\r  📂 \(collected.count)개 파일 탐색 중...", terminator: "")
-                fflush(stdout)
+            if isGuiProgress {
+                if collected.count % 25 == 0 {
+                    print("[STREAM:COLLECT:\(collected.count):\(p)]")
+                    fflush(stdout)
+                }
+            } else {
+                if collected.count % 500 == 0 {
+                    print("\r  📂 \(collected.count)개 파일 탐색 중...", terminator: "")
+                    fflush(stdout)
+                }
             }
+        }
+        
+        if isGuiProgress {
+            print("[STREAM:COLLECT_DONE:\(collected.count)]")
+            fflush(stdout)
         }
         
         // Bottom-up traversal: 자식 파일/폴더를 먼저 처리하여 상위 디렉터리 이름 변경 시 경로 단절 방지
@@ -631,6 +655,12 @@ func runScanCommand(args: [String]) {
             totalScanned += 1
             sessionScanned += 1
             let name = (p as NSString).lastPathComponent
+            
+            if isGuiProgress && (idx % 10 == 0 || isDecomposed(name)) {
+                print("[STREAM:PROGRESS:\(idx + 1):\(collected.count):\(totalFixed):\(totalFailed):\(p)]")
+                fflush(stdout)
+            }
+            
             if isDecomposed(name) {
                 let nfc = (name as NSString).precomposedStringWithCanonicalMapping
                 if isDryRun {
@@ -646,24 +676,39 @@ func runScanCommand(args: [String]) {
                         status: "DRY_RUN",
                         errorReason: nil
                     )
-                    print("\r  🔍 [발견] '\(name)' ➔ '\(nfc)'")
+                    if isGuiProgress {
+                        print("[STREAM:CONVERTED:\(name):\(nfc):\(p)]")
+                        fflush(stdout)
+                    } else {
+                        print("\r  🔍 [발견] '\(name)' ➔ '\(nfc)'")
+                    }
                 } else {
                     let result = safeRenameToNFCWithResult(path: p, sessionId: sessionId, sourceType: "SCAN")
                     switch result {
                     case .success:
                         totalFixed += 1
                         sessionFixed += 1
-                        print("\r  ✅ [수복] '\(name)' ➔ '\(nfc)'")
+                        if isGuiProgress {
+                            print("[STREAM:CONVERTED:\(name):\(nfc):\(p)]")
+                            fflush(stdout)
+                        } else {
+                            print("\r  ✅ [수복] '\(name)' ➔ '\(nfc)'")
+                        }
                     case .failed(let reason):
                         totalFailed += 1
                         sessionFailed += 1
-                        print("\r  ❌ [실패] '\(name)' (\(reason))")
+                        if isGuiProgress {
+                            print("[STREAM:FAILED:\(name):\(reason):\(p)]")
+                            fflush(stdout)
+                        } else {
+                            print("\r  ❌ [실패] '\(name)' (\(reason))")
+                        }
                     default:
                         break
                     }
                 }
             }
-            if idx % 200 == 0 {
+            if !isGuiProgress && idx % 200 == 0 {
                 print("\r  🔍 \(totalScanned)/\(collected.count)개 항목 검사 중 (수복: \(totalFixed)건, 실패: \(totalFailed)건)...", terminator: "")
                 fflush(stdout)
             }
@@ -680,14 +725,19 @@ func runScanCommand(args: [String]) {
     }
     
     let duration = String(format: "%.2f", Date().timeIntervalSince(startTime))
-    print("\n============================================================")
-    print("  🎉 스캔 완료 (\(duration)초) | 검사 항목: \(totalScanned)개 | ✅ 수복 완료: \(totalFixed)개 | ❌ 실패: \(totalFailed)개")
-    if totalFailed > 0 {
-        print("  ⚠️  실패한 항목의 상세 사유는 'nfc_watcher failures' 명령으로 확인하세요.")
+    if isGuiProgress {
+        print("[STREAM:DONE:\(duration):\(totalScanned):\(totalFixed):\(totalFailed)]")
+        fflush(stdout)
+    } else {
+        print("\n============================================================")
+        print("  🎉 스캔 완료 (\(duration)초) | 검사 항목: \(totalScanned)개 | ✅ 수복 완료: \(totalFixed)개 | ❌ 실패: \(totalFailed)개")
+        if totalFailed > 0 {
+            print("  ⚠️  실패한 항목의 상세 사유는 'nfc_watcher failures' 명령으로 확인하세요.")
+        }
+        print("============================================================")
     }
-    print("============================================================")
     
-    if !isDryRun {
+    if !isDryRun && !isGuiProgress {
         showNotification(
             title: "기존 파일 자모 전수 수복 완료",
             subtitle: "성공: \(totalFixed)건 / 실패: \(totalFailed)건",

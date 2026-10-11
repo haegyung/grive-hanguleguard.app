@@ -35,6 +35,17 @@ class AppStateManager: ObservableObject {
     @Published var totalFailedCount: Int = 0
     @Published var auditFilter: String = "ALL" // "ALL", "FAILED", "SUCCESS"
     
+    // Live Scan Streaming Progress State
+    @Published var scanPhaseText: String = "대기 중"
+    @Published var scanCurrent: Int = 0
+    @Published var scanTotal: Int = 0
+    @Published var scanFixedCount: Int = 0
+    @Published var scanFailCount: Int = 0
+    @Published var scanCurrentPath: String = ""
+    @Published var liveConvertedItems: [String] = []
+    
+    private var currentScanProcess: Process?
+    
     private let logURL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".local/state/finder-tools/nfc_watcher.log")
     private let dbPath = FileManager.default.homeDirectoryForCurrentUser
@@ -285,11 +296,30 @@ class AppStateManager: ObservableObject {
         }
     }
     
+    func cancelScan() {
+        if let proc = currentScanProcess, proc.isRunning {
+            proc.terminate()
+            currentScanProcess = nil
+            scanPhaseText = "스캔이 사용자에 의해 안전하게 중단되었습니다."
+            isScanning = false
+            refreshState()
+            refreshAuditDB()
+        }
+    }
+    
     func runDeepScan(targetPath: String?) {
         isScanning = true
-        scanResult = "기존 파일 전수 스캔 및 감사 장부 기록을 진행 중입니다..."
+        scanResult = nil
+        scanPhaseText = "1단계: 디렉터리 내 파일 탐색 및 인덱싱 중..."
+        scanCurrent = 0
+        scanTotal = 0
+        scanFixedCount = 0
+        scanFailCount = 0
+        scanCurrentPath = ""
+        liveConvertedItems = []
         
-        DispatchQueue.global(qos: .userInitiated).async {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
             let binaryPath = FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(".local/bin/finder-tools/nfc_watcher").path
             
@@ -297,28 +327,116 @@ class AppStateManager: ObservableObject {
             let pipe = Pipe()
             task.executableURL = URL(fileURLWithPath: binaryPath)
             
+            var args = ["scan", "--gui-progress"]
             if let path = targetPath {
-                task.arguments = ["scan", path]
-            } else {
-                task.arguments = ["scan"]
+                args.append(path)
             }
+            task.arguments = args
             task.standardOutput = pipe
             task.standardError = pipe
+            self.currentScanProcess = task
             
-            try? task.run()
-            task.waitUntilExit()
+            var lineBuffer = ""
+            pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+                let data = handle.availableData
+                guard !data.isEmpty, let self = self else { return }
+                if let chunk = String(data: data, encoding: .utf8) {
+                    lineBuffer += chunk
+                    while let newlineRange = lineBuffer.range(of: "\n") {
+                        let rawLine = String(lineBuffer[..<newlineRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+                        lineBuffer.removeSubrange(..<newlineRange.upperBound)
+                        self.parseStreamLine(rawLine)
+                    }
+                }
+            }
             
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let output = String(data: data, encoding: .utf8) ?? ""
+            do {
+                try task.run()
+                task.waitUntilExit()
+            } catch {
+                DispatchQueue.main.async {
+                    self.scanResult = "스캔 실행 실패: \(error.localizedDescription)"
+                }
+            }
             
-            let lines = output.components(separatedBy: "\n")
-            let summary = lines.first(where: { $0.contains("스캔 완료") }) ?? "스캔 및 수복 처리가 완료되었습니다."
+            pipe.fileHandleForReading.readabilityHandler = nil
             
             DispatchQueue.main.async {
                 self.isScanning = false
-                self.scanResult = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+                self.currentScanProcess = nil
                 self.refreshState()
                 self.refreshAuditDB()
+            }
+        }
+    }
+    
+    private func parseStreamLine(_ line: String) {
+        guard line.hasPrefix("[STREAM:") && line.hasSuffix("]") else { return }
+        let payload = String(line.dropFirst("[STREAM:".count).dropLast(1))
+        let parts = payload.components(separatedBy: ":")
+        guard let command = parts.first else { return }
+        
+        DispatchQueue.main.async {
+            switch command {
+            case "COLLECT":
+                if parts.count >= 3 {
+                    let count = Int(parts[1]) ?? 0
+                    let path = parts.dropFirst(2).joined(separator: ":")
+                    self.scanPhaseText = "1단계: 파일 수집 중 (\(count)개 발견)..."
+                    self.scanCurrentPath = path
+                }
+            case "COLLECT_DONE":
+                if parts.count >= 2 {
+                    let total = Int(parts[1]) ?? 0
+                    self.scanTotal = total
+                    self.scanPhaseText = "2단계: 자모 분석 및 수복 중 (총 \(total)개)..."
+                }
+            case "PROGRESS":
+                if parts.count >= 6 {
+                    let curr = Int(parts[1]) ?? 0
+                    let tot = Int(parts[2]) ?? 0
+                    let fixed = Int(parts[3]) ?? 0
+                    let failed = Int(parts[4]) ?? 0
+                    let path = parts.dropFirst(5).joined(separator: ":")
+                    
+                    self.scanCurrent = curr
+                    self.scanTotal = tot
+                    self.scanFixedCount = fixed
+                    self.scanFailCount = failed
+                    self.scanCurrentPath = path
+                    
+                    let pct = tot > 0 ? Int((Double(curr) / Double(tot)) * 100.0) : 0
+                    self.scanPhaseText = "2단계: 정밀 수복 중 \(pct)% (\(curr)/\(tot))"
+                }
+            case "CONVERTED":
+                if parts.count >= 3 {
+                    let orig = parts[1]
+                    let nfc = parts[2]
+                    self.liveConvertedItems.insert("✅ '\(orig)' ➔ '\(nfc)'", at: 0)
+                    if self.liveConvertedItems.count > 6 {
+                        self.liveConvertedItems.removeLast()
+                    }
+                }
+            case "FAILED":
+                if parts.count >= 3 {
+                    let orig = parts[1]
+                    let reason = parts[2]
+                    self.liveConvertedItems.insert("❌ '\(orig)': \(reason)", at: 0)
+                    if self.liveConvertedItems.count > 6 {
+                        self.liveConvertedItems.removeLast()
+                    }
+                }
+            case "DONE":
+                if parts.count >= 5 {
+                    let dur = parts[1]
+                    let tot = parts[2]
+                    let fixed = parts[3]
+                    let failed = parts[4]
+                    self.scanResult = "스캔 완료 (\(dur)초) | 검사: \(tot)개 | 수복 완료: \(fixed)개 | 실패: \(failed)개"
+                    self.scanPhaseText = "수복 작업 완료"
+                }
+            default:
+                break
             }
         }
     }
@@ -581,14 +699,104 @@ struct ContentView: View {
                         }
                         
                         if state.isScanning {
-                            HStack(spacing: 10) {
-                                ProgressView()
+                            VStack(alignment: .leading, spacing: 10) {
+                                HStack {
+                                    Text(state.scanPhaseText)
+                                        .font(.subheadline)
+                                        .fontWeight(.semibold)
+                                    Spacer()
+                                    if state.scanTotal > 0 {
+                                        Text("\(state.scanCurrent) / \(state.scanTotal)개 (\(Int((Double(state.scanCurrent) / Double(max(state.scanTotal, 1))) * 100))%)")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+                                
+                                if state.scanTotal > 0 {
+                                    ProgressView(value: Double(state.scanCurrent), total: Double(max(state.scanTotal, 1)))
+                                        .progressViewStyle(.linear)
+                                } else {
+                                    ProgressView()
+                                        .progressViewStyle(.linear)
+                                }
+                                
+                                HStack(spacing: 8) {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundColor(.green)
+                                        Text("수복: \(state.scanFixedCount)건")
+                                            .font(.caption)
+                                            .fontWeight(.medium)
+                                    }
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(RoundedRectangle(cornerRadius: 6).fill(Color.green.opacity(0.12)))
+                                    
+                                    HStack(spacing: 4) {
+                                        Image(systemName: state.scanFailCount > 0 ? "xmark.octagon.fill" : "checkmark.seal")
+                                            .foregroundColor(state.scanFailCount > 0 ? .red : .secondary)
+                                        Text("실패: \(state.scanFailCount)건")
+                                            .font(.caption)
+                                            .fontWeight(.medium)
+                                            .foregroundColor(state.scanFailCount > 0 ? .red : .secondary)
+                                    }
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(RoundedRectangle(cornerRadius: 6).fill(state.scanFailCount > 0 ? Color.red.opacity(0.12) : Color.primary.opacity(0.04)))
+                                    
+                                    Spacer()
+                                    
+                                    Button(action: {
+                                        state.cancelScan()
+                                    }) {
+                                        Label("스캔 중단", systemImage: "stop.circle")
+                                    }
                                     .controlSize(.small)
-                                Text("디렉터리 내 모든 파일을 탐색하여 자모를 정밀 수복하고 있습니다...")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
+                                    .buttonStyle(.bordered)
+                                }
+                                
+                                if !state.scanCurrentPath.isEmpty {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "folder")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                        Text(state.scanCurrentPath)
+                                            .font(.system(size: 10, design: .monospaced))
+                                            .foregroundColor(.secondary)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                    }
+                                }
+                                
+                                if !state.liveConvertedItems.isEmpty {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text("실시간 수복 라이브 피드 (최근 항목)")
+                                            .font(.system(size: 10, weight: .semibold))
+                                            .foregroundColor(.secondary)
+                                        ForEach(state.liveConvertedItems, id: \.self) { item in
+                                            Text(item)
+                                                .font(.system(size: 11, design: .monospaced))
+                                                .foregroundColor(.primary)
+                                                .lineLimit(1)
+                                        }
+                                    }
+                                    .padding(8)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                            .fill(Color(NSColor.textBackgroundColor))
+                                    )
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                            .stroke(Color.primary.opacity(0.06), lineWidth: 0.5)
+                                    )
+                                }
                             }
-                            .padding(.top, 4)
+                            .padding(12)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(Color(NSColor.windowBackgroundColor).opacity(0.7))
+                            )
                         }
                         
                         if let res = state.scanResult {

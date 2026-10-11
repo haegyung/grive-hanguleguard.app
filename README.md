@@ -87,6 +87,7 @@ sequenceDiagram
 
 * **원클릭 설치 및 가동**: 버튼 클릭 한 번으로 모든 컴포넌트 설치 및 백그라운드 데몬 가동
 * **기존 생성 파일 전수 수복 (Deep Scan)**: 기본 작업 폴더 및 외장하드 선택 일괄 수복
+* **수복 감사 장부 및 실패 추적 (Local DB)**: SQLite3 기반으로 성공/실패 내역을 실시간 집계하고, 미수복 파일의 에러 사유 확인 및 Finder 바로가기 지원
 * **권한 점검 및 바로가기**: 로그인 항목, 전체 디스크 접근 권한(TCC), Finder 확장 권한을 앱에서 원클릭으로 열고 확인
 * **실시간 상태 & 로그 뷰어**: 데몬 실행 상태(PID)와 실시간 파일 변환 로그를 한눈에 모니터링
 * **자가 진단 테스트**: 버튼 클릭으로 실시간 NFD ➔ NFC 변환이 정상 작동하는지 즉시 검증
@@ -109,8 +110,10 @@ open GriveHangulGuard.app
 * **초경량 저전력**: RAM 약 9~10MB, CPU 0.0% 상주.
 * **버퍼 오버플로우 자동 치유**: 대량 이동 시 FSEvents 버퍼가 넘쳐도 해당 디렉터리를 자동 재귀 스윕.
 
-### 3. 기존 파일 전수 수복 (Deep Recursive Scan)
+### 3. 기존 파일 전수 수복 및 로컬 감사 DB (Deep Scan & SQLite3 Audit Ledger)
 * **디스크/외장하드 전수 탐색**: 이미 저장되어 있던 대량의 NFD 자모 분리 파일이나 외장 드라이브를 일괄 탐색하여 온전한 NFC로 결합.
+* **로컬 감사 DB (`hangul_guard.db`)**: macOS 내장 `libsqlite3`를 통해 스캔 세션별 수복 성공/실패 내역을 영구 기록.
+* **실패 원인 역추적 (`nfc_watcher failures`)**: 권한 부족(Permission Denied)이나 파일 잠금으로 수복되지 않은 파일 목록과 에러 코드를 즉시 조회.
 * **미리보기 모드 지원 (`--dry-run`)**: 실제 파일명을 변경하기 전 대상 파일 목록과 변환 예상 결과를 안전하게 미리 검토 가능.
 
 ### 4. 윈도우 호환 클린 ZIP 압축
@@ -125,9 +128,9 @@ open GriveHangulGuard.app
 
 GitHub Releases에서 Apple 공식 공증 및 Developer ID 서명이 완료된 설치 파일을 내려받아 즉시 사용합니다:
 
-👉 **[공식 릴리스 페이지 바로가기 (v1.0.2)](https://github.com/haegyung/grive-hanguleguard.app/releases/tag/v1.0.2)**  
-* **[GriveHangulGuard.dmg (드래그 앤 드롭 설치 디스크)](https://github.com/haegyung/grive-hanguleguard.app/releases/download/v1.0.2/GriveHangulGuard.dmg)**
-* **[GriveHangulGuard-v1.0.2-notarized.zip (독립형 앱 압축)](https://github.com/haegyung/grive-hanguleguard.app/releases/download/v1.0.2/GriveHangulGuard-v1.0.2-notarized.zip)**
+👉 **[공식 릴리스 페이지 바로가기 (v1.0.3)](https://github.com/haegyung/grive-hanguleguard.app/releases/tag/v1.0.3)**  
+* **[GriveHangulGuard.dmg (드래그 앤 드롭 설치 디스크)](https://github.com/haegyung/grive-hanguleguard.app/releases/download/v1.0.3/GriveHangulGuard.dmg)**
+* **[GriveHangulGuard-v1.0.3-notarized.zip (독립형 앱 압축)](https://github.com/haegyung/grive-hanguleguard.app/releases/download/v1.0.3/GriveHangulGuard-v1.0.3-notarized.zip)**
 
 > 🛡️ **Gatekeeper 공인 완료**: Apple Notary Service 공증 및 Hardened Runtime이 적용되어, "확인되지 않은 개발자" 경고창 없이 더블 클릭으로 즉시 실행됩니다.
 

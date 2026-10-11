@@ -1,13 +1,16 @@
 import Foundation
 import CoreServices
 import Darwin
+import SQLite3
 
 // ==============================================================================
 // macos-hangul-nfc-cleaner: Universal Native Swift Engine
 // - POSIX C-level rename() to bypass Cocoa URL NFD decomposition
 // - Mode 1 (daemon): Real-time FSEvents watcher with crash recovery & file stability
 // - Mode 2 (fix): Batch recursive Hangul Jamo normalizer for selected paths
-// - Mode 3 (zip): Windows-compatible clean ZIP compressor using native ditto
+// - Mode 3 (scan): Deep recursive scanner with persistent SQLite audit ledger
+// - Mode 4 (zip): Windows-compatible clean ZIP compressor using native ditto
+// - Mode 5 (history/failures): Local DB query & failure tracking CLI
 // ==============================================================================
 
 let fm = FileManager.default
@@ -15,6 +18,7 @@ let homeURL = fm.homeDirectoryForCurrentUser
 
 let logDir = homeURL.appendingPathComponent(".local/state/finder-tools")
 let logFileURL = logDir.appendingPathComponent("nfc_watcher.log")
+let dbFileURL = logDir.appendingPathComponent("hangul_guard.db")
 
 let configDir = homeURL.appendingPathComponent(".config/finder-tools")
 let configFileURL = configDir.appendingPathComponent("watcher_config.json")
@@ -56,6 +60,241 @@ func showNotification(title: String, subtitle: String, message: String = "") {
     try? task.run()
 }
 
+// MARK: - Native SQLite3 Audit Database
+
+final class AuditDatabase {
+    static let shared = AuditDatabase()
+    private var db: OpaquePointer?
+    private let lock = NSLock()
+    
+    private init() {
+        open()
+        createTables()
+    }
+    
+    deinit {
+        close()
+    }
+    
+    private func open() {
+        let path = dbFileURL.path
+        try? fm.createDirectory(at: logDir, withIntermediateDirectories: true)
+        if sqlite3_open(path, &db) != SQLITE_OK {
+            log("Failed to open SQLite database at \(path)")
+            db = nil
+            return
+        }
+        sqlite3_exec(db, "PRAGMA journal_mode = WAL;", nil, nil, nil)
+        sqlite3_exec(db, "PRAGMA synchronous = NORMAL;", nil, nil, nil)
+    }
+    
+    private func close() {
+        if let db = db {
+            sqlite3_close(db)
+            self.db = nil
+        }
+    }
+    
+    private func createTables() {
+        guard let db = db else { return }
+        let sql = """
+        CREATE TABLE IF NOT EXISTS scan_sessions (
+            session_id TEXT PRIMARY KEY,
+            target_path TEXT,
+            total_scanned INTEGER DEFAULT 0,
+            total_converted INTEGER DEFAULT 0,
+            total_failed INTEGER DEFAULT 0,
+            is_dry_run INTEGER DEFAULT 0,
+            start_time TEXT,
+            end_time TEXT,
+            duration_sec REAL DEFAULT 0.0
+        );
+        CREATE TABLE IF NOT EXISTS audit_records (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT,
+            source_type TEXT,
+            original_path TEXT,
+            original_name TEXT,
+            target_path TEXT,
+            target_name TEXT,
+            status TEXT,
+            error_reason TEXT,
+            timestamp TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_audit_status ON audit_records(status);
+        CREATE INDEX IF NOT EXISTS idx_audit_session ON audit_records(session_id);
+        CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_records(timestamp);
+        """
+        sqlite3_exec(db, sql, nil, nil, nil)
+    }
+    
+    func startSession(targetPath: String, isDryRun: Bool) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        let sessionId = UUID().uuidString
+        guard let db = db else { return sessionId }
+        let now = ISO8601DateFormatter().string(from: Date())
+        let sql = "INSERT INTO scan_sessions (session_id, target_path, is_dry_run, start_time) VALUES (?, ?, ?, ?);"
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_text(stmt, 1, (sessionId as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(stmt, 2, (targetPath as NSString).utf8String, -1, nil)
+            sqlite3_bind_int(stmt, 3, isDryRun ? 1 : 0)
+            sqlite3_bind_text(stmt, 4, (now as NSString).utf8String, -1, nil)
+            sqlite3_step(stmt)
+        }
+        sqlite3_finalize(stmt)
+        return sessionId
+    }
+    
+    func recordAudit(
+        sessionId: String?,
+        sourceType: String,
+        originalPath: String,
+        originalName: String,
+        targetPath: String,
+        targetName: String,
+        status: String,
+        errorReason: String? = nil
+    ) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let db = db else { return }
+        let now = ISO8601DateFormatter().string(from: Date())
+        let sql = """
+        INSERT INTO audit_records 
+        (session_id, source_type, original_path, original_name, target_path, target_name, status, error_reason, timestamp)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+        """
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+            if let sid = sessionId {
+                sqlite3_bind_text(stmt, 1, (sid as NSString).utf8String, -1, nil)
+            } else {
+                sqlite3_bind_null(stmt, 1)
+            }
+            sqlite3_bind_text(stmt, 2, (sourceType as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(stmt, 3, (originalPath as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(stmt, 4, (originalName as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(stmt, 5, (targetPath as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(stmt, 6, (targetName as NSString).utf8String, -1, nil)
+            sqlite3_bind_text(stmt, 7, (status as NSString).utf8String, -1, nil)
+            if let err = errorReason {
+                sqlite3_bind_text(stmt, 8, (err as NSString).utf8String, -1, nil)
+            } else {
+                sqlite3_bind_null(stmt, 8)
+            }
+            sqlite3_bind_text(stmt, 9, (now as NSString).utf8String, -1, nil)
+            sqlite3_step(stmt)
+        }
+        sqlite3_finalize(stmt)
+    }
+    
+    func endSession(sessionId: String, scanned: Int, converted: Int, failed: Int, duration: Double) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let db = db else { return }
+        let now = ISO8601DateFormatter().string(from: Date())
+        let sql = """
+        UPDATE scan_sessions 
+        SET total_scanned = ?, total_converted = ?, total_failed = ?, end_time = ?, duration_sec = ?
+        WHERE session_id = ?;
+        """
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_int(stmt, 1, Int32(scanned))
+            sqlite3_bind_int(stmt, 2, Int32(converted))
+            sqlite3_bind_int(stmt, 3, Int32(failed))
+            sqlite3_bind_text(stmt, 4, (now as NSString).utf8String, -1, nil)
+            sqlite3_bind_double(stmt, 5, duration)
+            sqlite3_bind_text(stmt, 6, (sessionId as NSString).utf8String, -1, nil)
+            sqlite3_step(stmt)
+        }
+        sqlite3_finalize(stmt)
+    }
+    
+    func getRecentSessions(limit: Int = 10) -> [[String: Any]] {
+        lock.lock()
+        defer { lock.unlock() }
+        var results = [[String: Any]]()
+        guard let db = db else { return results }
+        let sql = "SELECT session_id, target_path, total_scanned, total_converted, total_failed, is_dry_run, start_time, duration_sec FROM scan_sessions ORDER BY start_time DESC LIMIT ?;"
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_int(stmt, 1, Int32(limit))
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let sid = String(cString: sqlite3_column_text(stmt, 0))
+                let target = String(cString: sqlite3_column_text(stmt, 1))
+                let scanned = sqlite3_column_int(stmt, 2)
+                let converted = sqlite3_column_int(stmt, 3)
+                let failed = sqlite3_column_int(stmt, 4)
+                let isDry = sqlite3_column_int(stmt, 5)
+                let start = sqlite3_column_text(stmt, 6) != nil ? String(cString: sqlite3_column_text(stmt, 6)) : ""
+                let dur = sqlite3_column_double(stmt, 7)
+                results.append([
+                    "session_id": sid,
+                    "target_path": target,
+                    "total_scanned": Int(scanned),
+                    "total_converted": Int(converted),
+                    "total_failed": Int(failed),
+                    "is_dry_run": isDry != 0,
+                    "start_time": start,
+                    "duration_sec": dur
+                ])
+            }
+        }
+        sqlite3_finalize(stmt)
+        return results
+    }
+    
+    func getFailures(limit: Int = 50) -> [[String: Any]] {
+        lock.lock()
+        defer { lock.unlock() }
+        var results = [[String: Any]]()
+        guard let db = db else { return results }
+        let sql = "SELECT id, original_path, original_name, error_reason, timestamp FROM audit_records WHERE status = 'FAILED' ORDER BY id DESC LIMIT ?;"
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_int(stmt, 1, Int32(limit))
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let id = sqlite3_column_int(stmt, 0)
+                let path = String(cString: sqlite3_column_text(stmt, 1))
+                let name = String(cString: sqlite3_column_text(stmt, 2))
+                let reason = sqlite3_column_text(stmt, 3) != nil ? String(cString: sqlite3_column_text(stmt, 3)) : "알 수 없는 에러"
+                let time = sqlite3_column_text(stmt, 4) != nil ? String(cString: sqlite3_column_text(stmt, 4)) : ""
+                results.append([
+                    "id": Int(id),
+                    "original_path": path,
+                    "original_name": name,
+                    "error_reason": reason,
+                    "timestamp": time
+                ])
+            }
+        }
+        sqlite3_finalize(stmt)
+        return results
+    }
+    
+    func getOverallStats() -> (totalConverted: Int, totalFailed: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let db = db else { return (0, 0) }
+        var successCount = 0
+        var failCount = 0
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, "SELECT status, COUNT(*) FROM audit_records GROUP BY status;", -1, &stmt, nil) == SQLITE_OK {
+            while sqlite3_step(stmt) == SQLITE_ROW {
+                let st = String(cString: sqlite3_column_text(stmt, 0))
+                let cnt = sqlite3_column_int(stmt, 1)
+                if st == "SUCCESS" { successCount = Int(cnt) }
+                if st == "FAILED" { failCount = Int(cnt) }
+            }
+        }
+        sqlite3_finalize(stmt)
+        return (successCount, failCount)
+    }
+}
+
 // MARK: - Unicode & POSIX Crash-Safe 2-Step Rename
 
 func isDecomposed(_ string: String) -> Bool {
@@ -94,12 +333,23 @@ func isFileReady(path: String) -> Bool {
 var processingSet = Set<String>()
 let processingLock = NSLock()
 
-@discardableResult
-func safeRenameToNFC(path: String) -> Bool {
+enum RenameResult {
+    case success(targetName: String, targetPath: String)
+    case failed(reason: String)
+    case skippedNotDecomposed
+    case skippedBusy
+    case skippedNotExists
+}
+
+func safeRenameToNFCWithResult(
+    path: String,
+    sessionId: String? = nil,
+    sourceType: String = "WATCHER"
+) -> RenameResult {
     processingLock.lock()
     if processingSet.contains(path) {
         processingLock.unlock()
-        return false
+        return .skippedBusy
     }
     processingSet.insert(path)
     processingLock.unlock()
@@ -110,39 +360,83 @@ func safeRenameToNFC(path: String) -> Bool {
         processingLock.unlock()
     }
     
-    guard fm.fileExists(atPath: path) else { return false }
+    guard fm.fileExists(atPath: path) else { return .skippedNotExists }
     let nsPath = path as NSString
     let originalName = nsPath.lastPathComponent
-    guard isDecomposed(originalName) else { return false }
+    guard isDecomposed(originalName) else { return .skippedNotDecomposed }
     
     guard isFileReady(path: path) else {
         log("File not ready yet, deferring: \(originalName)")
-        return false
+        return .skippedBusy
     }
     
     let parent = nsPath.deletingLastPathComponent
     let nfcName = (originalName as NSString).precomposedStringWithCanonicalMapping
     
-    // Intent-Preserving Temp Name for Crash Recovery: .__nfc_tmp_<UUID>_<nfcName>
     let tmpName = ".__nfc_tmp_\(UUID().uuidString)_\(nfcName)"
     let tmpPath = "\(parent)/\(tmpName)"
     let finalPath = "\(parent)/\(nfcName)"
     
-    // POSIX C rename() preserves exact UTF-8 NFC byte sequence on APFS
+    // Step 1: Atomic move to intent-preserving temp journal name
     if rename(path, tmpPath) != 0 {
-        log("Rename step 1 failed for '\(originalName)': errno \(errno)")
-        return false
+        let errCode = errno
+        let errStr = String(cString: strerror(errCode))
+        let reason = "임시 경로 변경 실패: \(errStr) (errno \(errCode))"
+        log("Rename step 1 failed for '\(originalName)': \(reason)")
+        AuditDatabase.shared.recordAudit(
+            sessionId: sessionId,
+            sourceType: sourceType,
+            originalPath: path,
+            originalName: originalName,
+            targetPath: finalPath,
+            targetName: nfcName,
+            status: "FAILED",
+            errorReason: reason
+        )
+        return .failed(reason: reason)
     }
     
+    // Step 2: Atomic move to clean NFC final name
     if rename(tmpPath, finalPath) != 0 {
-        log("Rename step 2 failed for '\(originalName)': errno \(errno)")
+        let errCode = errno
+        let errStr = String(cString: strerror(errCode))
+        let reason = "완성형 최종 변경 실패: \(errStr) (errno \(errCode))"
+        log("Rename step 2 failed for '\(originalName)': \(reason)")
         // Rollback
         rename(tmpPath, path)
-        return false
+        AuditDatabase.shared.recordAudit(
+            sessionId: sessionId,
+            sourceType: sourceType,
+            originalPath: path,
+            originalName: originalName,
+            targetPath: finalPath,
+            targetName: nfcName,
+            status: "FAILED",
+            errorReason: reason
+        )
+        return .failed(reason: reason)
     }
     
     log("Normalized: '\(originalName)' -> '\(nfcName)' at \(parent)")
-    return true
+    AuditDatabase.shared.recordAudit(
+        sessionId: sessionId,
+        sourceType: sourceType,
+        originalPath: path,
+        originalName: originalName,
+        targetPath: finalPath,
+        targetName: nfcName,
+        status: "SUCCESS",
+        errorReason: nil
+    )
+    return .success(targetName: nfcName, targetPath: finalPath)
+}
+
+@discardableResult
+func safeRenameToNFC(path: String) -> Bool {
+    switch safeRenameToNFCWithResult(path: path, sessionId: nil, sourceType: "WATCHER") {
+    case .success: return true
+    default: return false
+    }
 }
 
 // MARK: - Crash Recovery & Sweep
@@ -162,6 +456,16 @@ func recoverOrphanTempFiles(at rootPath: String) {
                 if !fm.fileExists(atPath: finalPath) {
                     if rename(fullPath, finalPath) == 0 {
                         log("Crash recovery restored: '\(name)' -> '\(targetName)'")
+                        AuditDatabase.shared.recordAudit(
+                            sessionId: nil,
+                            sourceType: "RECOVERY",
+                            originalPath: fullPath,
+                            originalName: name,
+                            targetPath: finalPath,
+                            targetName: targetName,
+                            status: "SUCCESS",
+                            errorReason: "Crash recovery"
+                        )
                     }
                 } else {
                     unlink(fullPath)
@@ -253,7 +557,7 @@ func runFixCommand(args: [String]) {
     }
 }
 
-// MARK: - Subcommand: Scan (Deep Recursive Full Normalizer)
+// MARK: - Subcommand: Scan (Deep Recursive Full Normalizer with Audit DB)
 
 func runScanCommand(args: [String]) {
     var isDryRun = false
@@ -272,14 +576,16 @@ func runScanCommand(args: [String]) {
     }
     
     print("============================================================")
-    print("  🔍 Grive한글가드: 기존 파일 한글 자모 전수 스캔 및 수복")
+    print("  🔍 Grive한글가드: 기존 파일 한글 자모 전수 스캔 및 감사 장부 기록")
     if isDryRun {
         print("  ⚠️  [미리보기 모드] 실제 파일명은 변경되지 않습니다.")
     }
+    print("  💾 로컬 감사 DB: \(dbFileURL.path)")
     print("============================================================")
     
     var totalScanned = 0
     var totalFixed = 0
+    var totalFailed = 0
     let startTime = Date()
     
     for rawPath in targetPaths {
@@ -289,7 +595,8 @@ func runScanCommand(args: [String]) {
             continue
         }
         
-        print("\n📂 대상 디렉터리: \(path)")
+        let sessionId = AuditDatabase.shared.startSession(targetPath: path, isDryRun: isDryRun)
+        print("\n📂 대상 디렉터리: \(path) (세션: \(sessionId.prefix(8)))")
         
         if !isDryRun {
             recoverOrphanTempFiles(at: path)
@@ -316,39 +623,136 @@ func runScanCommand(args: [String]) {
         // Bottom-up traversal: 자식 파일/폴더를 먼저 처리하여 상위 디렉터리 이름 변경 시 경로 단절 방지
         collected.sort { $0.components(separatedBy: "/").count > $1.components(separatedBy: "/").count }
         
+        var sessionScanned = 0
+        var sessionFixed = 0
+        var sessionFailed = 0
+        
         for (idx, p) in collected.enumerated() {
             totalScanned += 1
+            sessionScanned += 1
             let name = (p as NSString).lastPathComponent
             if isDecomposed(name) {
                 let nfc = (name as NSString).precomposedStringWithCanonicalMapping
-                totalFixed += 1
                 if isDryRun {
+                    totalFixed += 1
+                    sessionFixed += 1
+                    AuditDatabase.shared.recordAudit(
+                        sessionId: sessionId,
+                        sourceType: "SCAN",
+                        originalPath: p,
+                        originalName: name,
+                        targetPath: "\(NSString(string: p).deletingLastPathComponent)/\(nfc)",
+                        targetName: nfc,
+                        status: "DRY_RUN",
+                        errorReason: nil
+                    )
                     print("\r  🔍 [발견] '\(name)' ➔ '\(nfc)'")
                 } else {
-                    if safeRenameToNFC(path: p) {
+                    let result = safeRenameToNFCWithResult(path: p, sessionId: sessionId, sourceType: "SCAN")
+                    switch result {
+                    case .success:
+                        totalFixed += 1
+                        sessionFixed += 1
                         print("\r  ✅ [수복] '\(name)' ➔ '\(nfc)'")
+                    case .failed(let reason):
+                        totalFailed += 1
+                        sessionFailed += 1
+                        print("\r  ❌ [실패] '\(name)' (\(reason))")
+                    default:
+                        break
                     }
                 }
             }
             if idx % 200 == 0 {
-                print("\r  🔍 \(totalScanned)/\(collected.count)개 항목 검사 중 (자모 분리: \(totalFixed)건)...", terminator: "")
+                print("\r  🔍 \(totalScanned)/\(collected.count)개 항목 검사 중 (수복: \(totalFixed)건, 실패: \(totalFailed)건)...", terminator: "")
                 fflush(stdout)
             }
         }
+        
+        let sessionDuration = Date().timeIntervalSince(startTime)
+        AuditDatabase.shared.endSession(
+            sessionId: sessionId,
+            scanned: sessionScanned,
+            converted: sessionFixed,
+            failed: sessionFailed,
+            duration: sessionDuration
+        )
     }
     
     let duration = String(format: "%.2f", Date().timeIntervalSince(startTime))
     print("\n============================================================")
-    print("  🎉 스캔 완료 (\(duration)초) | 검사 항목: \(totalScanned)개 | \(isDryRun ? "발견: " : "수복 완료: ")\(totalFixed)개")
+    print("  🎉 스캔 완료 (\(duration)초) | 검사 항목: \(totalScanned)개 | ✅ 수복 완료: \(totalFixed)개 | ❌ 실패: \(totalFailed)개")
+    if totalFailed > 0 {
+        print("  ⚠️  실패한 항목의 상세 사유는 'nfc_watcher failures' 명령으로 확인하세요.")
+    }
     print("============================================================")
     
     if !isDryRun {
         showNotification(
             title: "기존 파일 자모 전수 수복 완료",
-            subtitle: "총 \(totalFixed)개 항목 정상 결합됨",
+            subtitle: "성공: \(totalFixed)건 / 실패: \(totalFailed)건",
             message: "검사 항목: \(totalScanned)개 (소요시간: \(duration)초)"
         )
     }
+}
+
+// MARK: - Subcommand: History & Failures (Audit CLI)
+
+func runHistoryCommand() {
+    print("════════════════════════════════════════════════════════════════════════════")
+    print("  📋 Grive한글가드 최근 스캔 세션 이력 (Local DB)")
+    print("  경로: \(dbFileURL.path)")
+    print("════════════════════════════════════════════════════════════════════════════")
+    
+    let sessions = AuditDatabase.shared.getRecentSessions(limit: 15)
+    if sessions.isEmpty {
+        print("  아직 저장된 스캔 세션이 없습니다.")
+        return
+    }
+    
+    print(String(format: "%-10@ %-20@ %-6@ %-6@ %-6@ %-8@ %-30@", "세션ID", "일시", "검사", "성공", "실패", "소요", "대상 경로"))
+    print("────────────────────────────────────────────────────────────────────────────")
+    for s in sessions {
+        let sid = String((s["session_id"] as? String ?? "-").prefix(8))
+        let time = String((s["start_time"] as? String ?? "-").prefix(19)).replacingOccurrences(of: "T", with: " ")
+        let scanned = s["total_scanned"] as? Int ?? 0
+        let converted = s["total_converted"] as? Int ?? 0
+        let failed = s["total_failed"] as? Int ?? 0
+        let dur = String(format: "%.1fs", s["duration_sec"] as? Double ?? 0.0)
+        let target = s["target_path"] as? String ?? ""
+        let dry = (s["is_dry_run"] as? Bool ?? false) ? " [미리보기]" : ""
+        print(String(format: "%-10@ %-20@ %-6d %-6d %-6d %-8@ %-30@", sid, time, scanned, converted, failed, dur, "\(target)\(dry)"))
+    }
+    
+    let stats = AuditDatabase.shared.getOverallStats()
+    print("════════════════════════════════════════════════════════════════════════════")
+    print("  📊 누적 수복 총계: ✅ 성공 \(stats.totalConverted)건 | ❌ 실패 \(stats.totalFailed)건")
+    print("════════════════════════════════════════════════════════════════════════════\n")
+}
+
+func runFailuresCommand() {
+    print("════════════════════════════════════════════════════════════════════════════")
+    print("  ❌ Grive한글가드 수복 실패 및 미수복 상세 장부 (최근 50건)")
+    print("  경로: \(dbFileURL.path)")
+    print("════════════════════════════════════════════════════════════════════════════")
+    
+    let failures = AuditDatabase.shared.getFailures(limit: 50)
+    if failures.isEmpty {
+        print("  🎉 실패 또는 권한 부족으로 미수복된 파일이 없습니다! (전체 무결성 확보)")
+        return
+    }
+    
+    for f in failures {
+        let id = f["id"] as? Int ?? 0
+        let time = f["timestamp"] as? String ?? ""
+        let path = f["original_path"] as? String ?? ""
+        let reason = f["error_reason"] as? String ?? "알 수 없음"
+        print("  [#\(id)] \(time)")
+        print("    📂 파일: \(path)")
+        print("    ⚠️  사유: \(reason)")
+        print("  ────────────────────────────────────────────────────────────────────────")
+    }
+    print("  총 \(failures.count)건의 실패 항목이 조회되었습니다.\n")
 }
 
 // MARK: - Subcommand: Zip (Windows-Compatible Clean Compressor)
@@ -564,6 +968,7 @@ func runDaemonCommand() {
     
     log("GriveHangulGuard Native Swift Engine starting (daemon mode).")
     log("Monitored paths: \(pathsToWatch)")
+    log("Audit database active: \(dbFileURL.path)")
     
     // Initial Sweep & Crash Recovery
     for path in pathsToWatch {
@@ -639,6 +1044,10 @@ func main() {
         runFixCommand(args: remainingArgs)
     case "scan", "--scan":
         runScanCommand(args: remainingArgs)
+    case "history", "--history", "sessions":
+        runHistoryCommand()
+    case "failures", "--failures", "failed":
+        runFailuresCommand()
     case "zip", "--zip":
         runZipCommand(args: remainingArgs)
     case "help", "--help", "-h":
@@ -647,6 +1056,8 @@ func main() {
         Usage:
           nfc_watcher [daemon]              Run real-time background normalizer
           nfc_watcher scan [paths...]       Deep scan & recover existing files (add --dry-run for preview)
+          nfc_watcher history               View recent scan sessions and overall statistics
+          nfc_watcher failures              View failed / permission-denied files from local DB
           nfc_watcher fix <paths...>        Batch normalize NFD Hangul filenames to NFC
           nfc_watcher zip <paths...>        Create clean, Windows-compatible zip without junk
           nfc_watcher --help                Show this help message

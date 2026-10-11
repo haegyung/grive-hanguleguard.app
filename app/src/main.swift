@@ -1,5 +1,21 @@
 import SwiftUI
 import AppKit
+import SQLite3
+
+// MARK: - Models
+
+struct AuditEntry: Identifiable, Hashable {
+    let id: Int
+    let sessionId: String?
+    let sourceType: String
+    let originalPath: String
+    let originalName: String
+    let targetPath: String
+    let targetName: String
+    let status: String // "SUCCESS", "FAILED", "DRY_RUN"
+    let errorReason: String?
+    let timestamp: String
+}
 
 // MARK: - Process & System Manager
 
@@ -13,14 +29,23 @@ class AppStateManager: ObservableObject {
     @Published var isWorking: Bool = false
     @Published var isScanning: Bool = false
     
+    // Audit Ledger state
+    @Published var auditRecords: [AuditEntry] = []
+    @Published var totalSuccessCount: Int = 0
+    @Published var totalFailedCount: Int = 0
+    @Published var auditFilter: String = "ALL" // "ALL", "FAILED", "SUCCESS"
+    
     private let logURL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".local/state/finder-tools/nfc_watcher.log")
+    private let dbPath = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".local/state/finder-tools/hangul_guard.db").path
     private let plistLabel = "com.grive.hangulguard"
     private var timer: Timer?
     
     init() {
         DispatchQueue.main.async { [weak self] in
             self?.refreshState()
+            self?.refreshAuditDB()
         }
         timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             self?.refreshState()
@@ -91,6 +116,77 @@ class AppStateManager: ObservableObject {
         }
     }
     
+    func refreshAuditDB() {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            guard FileManager.default.fileExists(atPath: self.dbPath) else { return }
+            
+            var db: OpaquePointer?
+            if sqlite3_open_v2(self.dbPath, &db, SQLITE_OPEN_READONLY, nil) != SQLITE_OK {
+                return
+            }
+            defer { sqlite3_close(db) }
+            
+            // 1. Get counts
+            var successCount = 0
+            var failCount = 0
+            var countStmt: OpaquePointer?
+            if sqlite3_prepare_v2(db, "SELECT status, COUNT(*) FROM audit_records GROUP BY status;", -1, &countStmt, nil) == SQLITE_OK {
+                while sqlite3_step(countStmt) == SQLITE_ROW {
+                    let st = String(cString: sqlite3_column_text(countStmt, 0))
+                    let cnt = sqlite3_column_int(countStmt, 1)
+                    if st == "SUCCESS" { successCount = Int(cnt) }
+                    if st == "FAILED" { failCount = Int(cnt) }
+                }
+            }
+            sqlite3_finalize(countStmt)
+            
+            // 2. Fetch latest records
+            var records = [AuditEntry]()
+            var stmt: OpaquePointer?
+            let sql = """
+            SELECT id, session_id, source_type, original_path, original_name, target_path, target_name, status, error_reason, timestamp
+            FROM audit_records 
+            ORDER BY id DESC 
+            LIMIT 150;
+            """
+            if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+                while sqlite3_step(stmt) == SQLITE_ROW {
+                    let id = sqlite3_column_int(stmt, 0)
+                    let sid = sqlite3_column_text(stmt, 1) != nil ? String(cString: sqlite3_column_text(stmt, 1)) : nil
+                    let source = String(cString: sqlite3_column_text(stmt, 2))
+                    let origPath = String(cString: sqlite3_column_text(stmt, 3))
+                    let origName = String(cString: sqlite3_column_text(stmt, 4))
+                    let targetPath = String(cString: sqlite3_column_text(stmt, 5))
+                    let targetName = String(cString: sqlite3_column_text(stmt, 6))
+                    let status = String(cString: sqlite3_column_text(stmt, 7))
+                    let err = sqlite3_column_text(stmt, 8) != nil ? String(cString: sqlite3_column_text(stmt, 8)) : nil
+                    let time = sqlite3_column_text(stmt, 9) != nil ? String(cString: sqlite3_column_text(stmt, 9)) : ""
+                    
+                    records.append(AuditEntry(
+                        id: Int(id),
+                        sessionId: sid,
+                        sourceType: source,
+                        originalPath: origPath,
+                        originalName: origName,
+                        targetPath: targetPath,
+                        targetName: targetName,
+                        status: status,
+                        errorReason: err,
+                        timestamp: time
+                    ))
+                }
+            }
+            sqlite3_finalize(stmt)
+            
+            DispatchQueue.main.async {
+                self.totalSuccessCount = successCount
+                self.totalFailedCount = failCount
+                self.auditRecords = records
+            }
+        }
+    }
+    
     func runInstall(projectDir: String) {
         isWorking = true
         statusMessage = "시스템 설치 및 등록을 진행하고 있습니다..."
@@ -106,6 +202,7 @@ class AppStateManager: ObservableObject {
             DispatchQueue.main.async {
                 self.isWorking = false
                 self.refreshState()
+                self.refreshAuditDB()
             }
         }
     }
@@ -134,6 +231,7 @@ class AppStateManager: ObservableObject {
             DispatchQueue.main.async {
                 self.isWorking = false
                 self.refreshState()
+                self.refreshAuditDB()
             }
         }
     }
@@ -150,6 +248,7 @@ class AppStateManager: ObservableObject {
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             self.refreshState()
+            self.refreshAuditDB()
         }
     }
     
@@ -181,13 +280,14 @@ class AppStateManager: ObservableObject {
                 } else {
                     self.testResult = "진단 실패: 데몬이 가동 중인지, 디스크 접근 권한이 활성화되었는지 확인해 주세요."
                 }
+                self.refreshAuditDB()
             }
         }
     }
     
     func runDeepScan(targetPath: String?) {
         isScanning = true
-        scanResult = "기존 파일 전수 스캔 및 자모 수복을 진행 중입니다..."
+        scanResult = "기존 파일 전수 스캔 및 감사 장부 기록을 진행 중입니다..."
         
         DispatchQueue.global(qos: .userInitiated).async {
             let binaryPath = FileManager.default.homeDirectoryForCurrentUser
@@ -218,6 +318,7 @@ class AppStateManager: ObservableObject {
                 self.isScanning = false
                 self.scanResult = summary.trimmingCharacters(in: .whitespacesAndNewlines)
                 self.refreshState()
+                self.refreshAuditDB()
             }
         }
     }
@@ -310,6 +411,17 @@ struct ContentView: View {
             return bundleParent
         }
         return "/Volumes/Extend/Projects/DevWorkspace/macos-hangul-nfc-cleaner"
+    }
+    
+    var filteredRecords: [AuditEntry] {
+        switch state.auditFilter {
+        case "FAILED":
+            return state.auditRecords.filter { $0.status == "FAILED" }
+        case "SUCCESS":
+            return state.auditRecords.filter { $0.status == "SUCCESS" }
+        default:
+            return state.auditRecords
+        }
     }
     
     var body: some View {
@@ -444,7 +556,7 @@ struct ContentView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("기존 생성 파일 전수 수복 (Deep Scan)")
                                     .font(.headline)
-                                Text("실시간 감시 전 이미 분리된 파일(ㅂㅗㄱㅗㅅㅓ)이나 외장하드의 한글을 일괄 결합합니다.")
+                                Text("실시간 감시 전 이미 분리된 파일이나 외장하드의 한글을 일괄 결합하고 장부에 기록합니다.")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                             }
@@ -496,6 +608,108 @@ struct ContentView: View {
                                     .fill(Color(NSColor.windowBackgroundColor))
                             )
                         }
+                    }
+                    .padding(16)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(Color(NSColor.controlBackgroundColor))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+                    )
+                    
+                    // Audit Ledger & Failure Tracker Card (Local DB)
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(alignment: .center) {
+                            Label("수복 이력 및 실패 감사 장부 (Local DB)", systemImage: "tray.full.fill")
+                                .font(.headline)
+                            Spacer()
+                            Button(action: {
+                                state.refreshAuditDB()
+                            }) {
+                                Label("장부 새로고침", systemImage: "arrow.clockwise")
+                            }
+                            .controlSize(.small)
+                        }
+                        
+                        Text("어느 파일이 수복되었고, 어디서 권한 부족/잠금으로 실패했는지 즉시 확인하고 위치를 엽니다.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        
+                        // Summary Metrics & Filter Bar
+                        HStack(spacing: 10) {
+                            HStack(spacing: 5) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(.green)
+                                Text("수복 성공 \(state.totalSuccessCount)건")
+                                    .font(.caption)
+                                    .fontWeight(.medium)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(Color.green.opacity(0.12))
+                            )
+                            
+                            HStack(spacing: 5) {
+                                Image(systemName: state.totalFailedCount > 0 ? "xmark.octagon.fill" : "checkmark.seal")
+                                    .foregroundColor(state.totalFailedCount > 0 ? .red : .secondary)
+                                Text("실패/미수복 \(state.totalFailedCount)건")
+                                    .font(.caption)
+                                    .fontWeight(.medium)
+                                    .foregroundColor(state.totalFailedCount > 0 ? .red : .secondary)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(state.totalFailedCount > 0 ? Color.red.opacity(0.12) : Color.primary.opacity(0.05))
+                            )
+                            
+                            Spacer()
+                            
+                            Picker("", selection: $state.auditFilter) {
+                                Text("전체").tag("ALL")
+                                Text("실패만 (\(state.totalFailedCount))").tag("FAILED")
+                                Text("성공만 (\(state.totalSuccessCount))").tag("SUCCESS")
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(width: 220)
+                        }
+                        
+                        // Audit Records Scroll List
+                        ScrollView {
+                            VStack(spacing: 8) {
+                                if filteredRecords.isEmpty {
+                                    VStack(spacing: 6) {
+                                        Image(systemName: state.auditFilter == "FAILED" ? "checkmark.shield" : "tray")
+                                            .font(.title2)
+                                            .foregroundColor(.secondary)
+                                        Text(state.auditFilter == "FAILED" ? "권한 부족 또는 실패로 미수복된 파일이 없습니다! (전체 무결성 확보)" : "아직 기록된 수복 내역이 없습니다.")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 24)
+                                } else {
+                                    ForEach(filteredRecords) { entry in
+                                        AuditRowView(entry: entry)
+                                    }
+                                }
+                            }
+                            .padding(8)
+                        }
+                        .frame(height: 190)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(Color(NSColor.textBackgroundColor))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
+                        )
                     }
                     .padding(16)
                     .background(
@@ -577,7 +791,7 @@ struct ContentView: View {
                             }
                             .padding(10)
                         }
-                        .frame(height: 120)
+                        .frame(height: 110)
                         .background(
                             RoundedRectangle(cornerRadius: 8, style: .continuous)
                                 .fill(Color(NSColor.textBackgroundColor))
@@ -631,7 +845,90 @@ struct ContentView: View {
                 .padding(20)
             }
         }
-        .frame(width: 680, height: 680)
+        .frame(width: 720, height: 760)
+    }
+}
+
+// MARK: - Audit Row View
+
+struct AuditRowView: View {
+    let entry: AuditEntry
+    
+    var isSuccess: Bool {
+        entry.status == "SUCCESS"
+    }
+    
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: isSuccess ? "checkmark.circle.fill" : "xmark.octagon.fill")
+                .foregroundColor(isSuccess ? .green : .red)
+                .font(.system(size: 15))
+                .padding(.top, 2)
+            
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .center, spacing: 6) {
+                    if isSuccess {
+                        Text(entry.originalName)
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                        Image(systemName: "arrow.right")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        Text(entry.targetName)
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                    } else {
+                        Text(entry.originalName)
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                            .foregroundColor(.red)
+                    }
+                    
+                    Spacer()
+                    
+                    Text("[\(entry.sourceType)] \(formatTimestamp(entry.timestamp))")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                }
+                
+                if let err = entry.errorReason, !err.isEmpty {
+                    Text("사유: \(err)")
+                        .font(.caption)
+                        .fontWeight(.medium)
+                        .foregroundColor(.red)
+                }
+                
+                Text(entry.originalPath)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            
+            Button("Finder에서 보기") {
+                let targetToOpen = isSuccess ? entry.targetPath : entry.originalPath
+                NSWorkspace.shared.selectFile(targetToOpen, inFileViewerRootedAtPath: "")
+            }
+            .controlSize(.mini)
+            .padding(.top, 2)
+        }
+        .padding(8)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(isSuccess ? Color.clear : Color.red.opacity(0.05))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .stroke(isSuccess ? Color.primary.opacity(0.04) : Color.red.opacity(0.2), lineWidth: 0.5)
+        )
+    }
+    
+    private func formatTimestamp(_ iso: String) -> String {
+        if iso.count >= 19 {
+            let sub = String(iso.prefix(19)).replacingOccurrences(of: "T", with: " ")
+            return sub
+        }
+        return iso
     }
 }
 
@@ -673,8 +970,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let contentView = ContentView()
         
         window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 680, height: 680),
-            styleMask: [.titled, .closable, .miniaturizable],
+            contentRect: NSRect(x: 0, y: 0, width: 720, height: 760),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )

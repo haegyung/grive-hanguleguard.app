@@ -118,9 +118,11 @@ open GriveHangulGuard.app
 * **실패 원인 역추적 (`nfc_watcher failures`)**: 권한 부족(Permission Denied)이나 파일 잠금으로 수복되지 않은 파일 목록과 에러 코드를 즉시 조회.
 * **미리보기 모드 지원 (`--dry-run`)**: 실제 파일명을 변경하기 전 대상 파일 목록과 변환 예상 결과를 안전하게 미리 검토 가능.
 
-### 4. 윈도우 호환 클린 ZIP 압축
-* `.DS_Store`와 `__MACOSX` 찌꺼기 100% 배제.
-* 자체 ZIP 바이너리 패처로 0x0800 플래그 각인.
+### 4. 윈도우 호환 클린 ZIP 압축 & 압축 시 무조건 적용 (Auto-Clean ZIP)
+* **신규 생성 ZIP 파일 전수 자동 감지**: Finder 기본 압축(아카이브 유틸리티)을 포함하여 감시 폴더 내에 생성되는 모든 `.zip` 파일을 실시간 감지하여 UTF-8 헤더(`0x0800`)와 완성형 파일명을 무조건 자동 각인.
+* **GUI 온/오프 토글 설정**: 앱 화면에서 '압축 시 무조건 적용' 스위치를 통해 손쉽게 활성화/비활성화.
+* **SQLite3 감사 장부 기록**: 자동 패치된 압축 파일의 엔트리 수와 타임스탬프를 감사 DB에 온전히 기록.
+* **`.DS_Store` 및 `__MACOSX` 찌꺼기 100% 배제**: 윈도우 탐색기에서 한글 깨짐 원천 방지.
 
 ---
 
@@ -130,9 +132,9 @@ open GriveHangulGuard.app
 
 GitHub Releases에서 Apple 공식 공증 및 Developer ID 서명이 완료된 설치 파일을 내려받아 즉시 사용합니다:
 
-👉 **[공식 릴리스 페이지 바로가기 (v1.0.4)](https://github.com/haegyung/grive-hanguleguard.app/releases/tag/v1.0.4)**  
-* **[GriveHangulGuard.dmg (드래그 앤 드롭 설치 디스크)](https://github.com/haegyung/grive-hanguleguard.app/releases/download/v1.0.4/GriveHangulGuard.dmg)**
-* **[GriveHangulGuard-v1.0.4-notarized.zip (독립형 앱 압축)](https://github.com/haegyung/grive-hanguleguard.app/releases/download/v1.0.4/GriveHangulGuard-v1.0.4-notarized.zip)**
+👉 **[공식 릴리스 페이지 바로가기 (v1.0.5)](https://github.com/haegyung/grive-hanguleguard.app/releases/tag/v1.0.5)**  
+* **[GriveHangulGuard.dmg (드래그 앤 드롭 설치 디스크)](https://github.com/haegyung/grive-hanguleguard.app/releases/download/v1.0.5/GriveHangulGuard.dmg)**
+* **[GriveHangulGuard-v1.0.5-notarized.zip (독립형 앱 압축)](https://github.com/haegyung/grive-hanguleguard.app/releases/download/v1.0.5/GriveHangulGuard-v1.0.5-notarized.zip)**
 
 > 🛡️ **Gatekeeper 공인 완료**: Apple Notary Service 공증 및 Hardened Runtime이 적용되어, "확인되지 않은 개발자" 경고창 없이 더블 클릭으로 즉시 실행됩니다.
 

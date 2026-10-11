@@ -820,14 +820,15 @@ func getUniqueZipPath(basePath: String) -> String {
     }
 }
 
-func patchZipUTF8(zipPath: String) -> Bool {
-    guard let handle = try? FileHandle(forUpdating: URL(fileURLWithPath: zipPath)) else { return false }
+func patchZipUTF8(zipPath: String) -> (modified: Bool, patchedCount: Int) {
+    guard let handle = try? FileHandle(forUpdating: URL(fileURLWithPath: zipPath)) else { return (false, 0) }
     defer { try? handle.close() }
     
-    guard let data = try? handle.readToEnd() else { return false }
+    guard let data = try? handle.readToEnd() else { return (false, 0) }
     var bytes = [UInt8](data)
     let len = bytes.count
     var modified = false
+    var count = 0
     
     var i = 0
     while i < len - 4 {
@@ -835,8 +836,11 @@ func patchZipUTF8(zipPath: String) -> Bool {
         if bytes[i] == 0x50 && bytes[i+1] == 0x4b && bytes[i+2] == 0x03 && bytes[i+3] == 0x04 {
             let flagIndex = i + 6
             if flagIndex + 1 < len {
-                bytes[flagIndex + 1] |= 0x08 // Set 0x0800 UTF-8 flag
-                modified = true
+                if (bytes[flagIndex + 1] & 0x08) == 0 {
+                    bytes[flagIndex + 1] |= 0x08 // Set 0x0800 UTF-8 flag
+                    modified = true
+                    count += 1
+                }
             }
             i += 30
             continue
@@ -845,8 +849,10 @@ func patchZipUTF8(zipPath: String) -> Bool {
         if bytes[i] == 0x50 && bytes[i+1] == 0x4b && bytes[i+2] == 0x01 && bytes[i+3] == 0x02 {
             let flagIndex = i + 8
             if flagIndex + 1 < len {
-                bytes[flagIndex + 1] |= 0x08 // Set 0x0800 UTF-8 flag
-                modified = true
+                if (bytes[flagIndex + 1] & 0x08) == 0 {
+                    bytes[flagIndex + 1] |= 0x08 // Set 0x0800 UTF-8 flag
+                    modified = true
+                }
             }
             i += 46
             continue
@@ -857,10 +863,11 @@ func patchZipUTF8(zipPath: String) -> Bool {
     if modified {
         try? handle.seek(toOffset: 0)
         try? handle.write(contentsOf: bytes)
-        return true
+        return (true, count)
     }
-    return false
+    return (false, 0)
 }
+
 
 func cleanJunkFiles(at rootPath: String) {
     guard let subpaths = try? fm.subpathsOfDirectory(atPath: rootPath) else { return }
@@ -937,11 +944,22 @@ func runZipCommand(args: [String]) {
         
         if task.terminationStatus == 0 {
             // 3. Post-patch zip headers with 0x0800 UTF-8 flag
-            _ = patchZipUTF8(zipPath: outputZipPath)
+            let (_, count) = patchZipUTF8(zipPath: outputZipPath)
+            let outName = (outputZipPath as NSString).lastPathComponent
+            AuditDatabase.shared.recordAudit(
+                sessionId: nil,
+                sourceType: "WINZIP",
+                originalPath: outputZipPath,
+                originalName: outName,
+                targetPath: outputZipPath,
+                targetName: "윈도우 호환 ZIP 생성 (헤더 \(count)개 각인)",
+                status: "SUCCESS",
+                errorReason: nil
+            )
             
             showNotification(
                 title: "윈도우 호환 압축 완료",
-                subtitle: (outputZipPath as NSString).lastPathComponent,
+                subtitle: outName,
                 message: "NFC 표준 파일명 및 .DS_Store 제거 완료"
             )
             log("Zip created with clean UTF-8 headers: \(outputZipPath)")
@@ -955,24 +973,109 @@ func runZipCommand(args: [String]) {
 
 // MARK: - Subcommand: Daemon (FSEvents Watcher)
 
-func loadMonitoredPaths() -> [String] {
+// MARK: - Configuration & Auto-Clean ZIP Options
+
+struct WatcherConfig {
+    var watchPaths: [String]
+    var autoCleanZip: Bool
+}
+
+func loadConfig() -> WatcherConfig {
     let defaultPaths = [
         homeURL.appendingPathComponent("Desktop").path,
         homeURL.appendingPathComponent("Downloads").path,
         homeURL.appendingPathComponent("Documents").path
     ].filter { fm.fileExists(atPath: $0) }
     
-    if fm.fileExists(atPath: configFileURL.path),
-       let data = try? Data(contentsOf: configFileURL),
-       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-       let customPaths = json["watch_paths"] as? [String] {
+    guard fm.fileExists(atPath: configFileURL.path),
+          let data = try? Data(contentsOf: configFileURL),
+          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        return WatcherConfig(watchPaths: defaultPaths, autoCleanZip: true)
+    }
+    
+    var validPaths = defaultPaths
+    if let customPaths = json["watch_paths"] as? [String] {
         let valid = customPaths
             .map { NSString(string: $0).expandingTildeInPath as String }
             .filter { fm.fileExists(atPath: $0) }
-        if !valid.isEmpty { return valid }
+        if !valid.isEmpty { validPaths = valid }
     }
-    return defaultPaths
+    
+    let autoCleanZip = (json["auto_clean_zip"] as? Bool) ?? true
+    return WatcherConfig(watchPaths: validPaths, autoCleanZip: autoCleanZip)
 }
+
+func isAutoCleanZipEnabled() -> Bool {
+    return loadConfig().autoCleanZip
+}
+
+func setAutoCleanZip(enabled: Bool) {
+    let current = loadConfig()
+    let dict: [String: Any] = [
+        "watch_paths": current.watchPaths,
+        "log_file": logFileURL.path,
+        "auto_clean_zip": enabled
+    ]
+    if let data = try? JSONSerialization.data(withJSONObject: dict, options: [.prettyPrinted]) {
+        try? fm.createDirectory(at: configDir, withIntermediateDirectories: true)
+        try? data.write(to: configFileURL)
+        log("Configuration updated: auto_clean_zip = \(enabled)")
+    }
+}
+
+func loadMonitoredPaths() -> [String] {
+    return loadConfig().watchPaths
+}
+
+func autoProcessZip(path: String) {
+    var currentPath = path
+    let name = (path as NSString).lastPathComponent
+    
+    // 1. If zip filename itself is decomposed, normalize to NFC first
+    if isDecomposed(name) {
+        let res = safeRenameToNFCWithResult(path: path, sessionId: nil, sourceType: "ZIP_WATCHER")
+        if case .success(_, let targetPath) = res {
+            currentPath = targetPath
+        }
+    }
+    
+    // 2. Check if auto-clean zip option is enabled
+    guard isAutoCleanZipEnabled() else { return }
+    guard fm.fileExists(atPath: currentPath) else { return }
+    
+    // 3. File quiescence check (ensure write handle is closed)
+    if !isFileReady(path: currentPath) {
+        log("ZIP file still being written, retry after delay: \(name)")
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.3) {
+            autoProcessZip(path: currentPath)
+        }
+        return
+    }
+    
+    // 4. In-memory patch 0x0800 UTF-8 header flag (idempotent)
+    let (modified, count) = patchZipUTF8(zipPath: currentPath)
+    if modified {
+        let zipName = (currentPath as NSString).lastPathComponent
+        log("Auto-Cleaned ZIP '\(zipName)': Injected UTF-8 (0x0800) flag into \(count) entry headers")
+        AuditDatabase.shared.recordAudit(
+            sessionId: nil,
+            sourceType: "ZIP_WATCHER",
+            originalPath: currentPath,
+            originalName: zipName,
+            targetPath: currentPath,
+            targetName: "UTF-8 헤더(0x0800) \(count)개 각인 완료",
+            status: "SUCCESS",
+            errorReason: nil
+        )
+        showNotification(
+            title: "압축 파일 자동 수복 완료",
+            subtitle: zipName,
+            message: "윈도우 호환 UTF-8(0x0800) 규격 각인 완료 (\(count)개 파일)"
+        )
+    }
+}
+
+// MARK: - Subcommand: Daemon (FSEvents Watcher)
 
 let eventCallback: FSEventStreamCallback = { (streamRef, clientCallBackInfo, numEvents, eventPaths, eventFlags, eventIds) in
     let paths = unsafeBitCast(eventPaths, to: NSArray.self) as! [String]
@@ -1001,9 +1104,19 @@ let eventCallback: FSEventStreamCallback = { (streamRef, clientCallBackInfo, num
         )) != 0
         
         let name = (path as NSString).lastPathComponent
-        if isInteresting || isDecomposed(name) {
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.08) {
-                safeRenameToNFC(path: path)
+        let ext = (path as NSString).pathExtension.lowercased()
+        
+        if ext == "zip" {
+            if isInteresting || isDecomposed(name) {
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.15) {
+                    autoProcessZip(path: path)
+                }
+            }
+        } else {
+            if isInteresting || isDecomposed(name) {
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.08) {
+                    safeRenameToNFC(path: path)
+                }
             }
         }
     }
@@ -1059,6 +1172,49 @@ func runDaemonCommand() {
     dispatchMain()
 }
 
+// MARK: - Subcommand: Config
+
+func runConfigCommand(args: [String]) {
+    if args.isEmpty {
+        let config = loadConfig()
+        print("════════════════════════════════════════════════════════════════════════════")
+        print("  ⚙️ Grive한글가드 시스템 설정 (watcher_config.json)")
+        print("  경로: \(configFileURL.path)")
+        print("════════════════════════════════════════════════════════════════════════════")
+        print("  • 실시간 감시 경로: \(config.watchPaths)")
+        print("  • 압축 시 무조건 적용 (Auto-Clean ZIP): \(config.autoCleanZip ? "활성화 (ON)" : "비활성화 (OFF)")")
+        print("  • 로그 파일: \(logFileURL.path)")
+        print("  • 감사 DB: \(dbFileURL.path)")
+        print("════════════════════════════════════════════════════════════════════════════\n")
+        return
+    }
+    
+    if args[0] == "set" || args[0] == "--set" {
+        if args.count >= 3 && args[1] == "auto_clean_zip" {
+            let val = args[2].lowercased()
+            let enabled = (val == "true" || val == "on" || val == "1" || val == "yes")
+            setAutoCleanZip(enabled: enabled)
+            print("✔ 설정 저장 완료: auto_clean_zip = \(enabled)")
+            return
+        }
+    }
+    
+    if args[0] == "--auto-clean-zip" || args[0] == "auto_clean_zip" {
+        if args.count >= 2 {
+            let val = args[1].lowercased()
+            let enabled = (val == "true" || val == "on" || val == "1" || val == "yes")
+            setAutoCleanZip(enabled: enabled)
+            print("✔ 설정 저장 완료: auto_clean_zip = \(enabled)")
+            return
+        } else {
+            print("현재 auto_clean_zip: \(isAutoCleanZipEnabled())")
+            return
+        }
+    }
+    
+    print("사용법: nfc_watcher config [set auto_clean_zip true|false]")
+}
+
 // MARK: - Entry Point Router (Multi-call Binary Support)
 
 func main() {
@@ -1100,6 +1256,13 @@ func main() {
         runFailuresCommand()
     case "zip", "--zip":
         runZipCommand(args: remainingArgs)
+    case "patch-zip", "--patch-zip":
+        for p in remainingArgs {
+            let full = (p as NSString).expandingTildeInPath
+            autoProcessZip(path: full)
+        }
+    case "config", "--config":
+        runConfigCommand(args: remainingArgs)
     case "help", "--help", "-h":
         print("""
         GriveHangulGuard macOS Universal Engine 🍏🇰🇷
@@ -1110,6 +1273,7 @@ func main() {
           nfc_watcher failures              View failed / permission-denied files from local DB
           nfc_watcher fix <paths...>        Batch normalize NFD Hangul filenames to NFC
           nfc_watcher zip <paths...>        Create clean, Windows-compatible zip without junk
+          nfc_watcher config [options]      View or change watcher configurations (auto_clean_zip)
           nfc_watcher --help                Show this help message
         """)
     default:

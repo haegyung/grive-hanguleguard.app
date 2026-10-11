@@ -44,12 +44,17 @@ class AppStateManager: ObservableObject {
     @Published var scanCurrentPath: String = ""
     @Published var liveConvertedItems: [String] = []
     
+    // Auto-Clean ZIP Option
+    @Published var autoCleanZip: Bool = true
+    
     private var currentScanProcess: Process?
     
     private let logURL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".local/state/finder-tools/nfc_watcher.log")
     private let dbPath = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".local/state/finder-tools/hangul_guard.db").path
+    private let configFileURL = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".config/finder-tools/watcher_config.json")
     private let plistLabel = "com.grive.hangulguard"
     private var timer: Timer?
     
@@ -57,9 +62,47 @@ class AppStateManager: ObservableObject {
         DispatchQueue.main.async { [weak self] in
             self?.refreshState()
             self?.refreshAuditDB()
+            self?.refreshConfig()
         }
         timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             self?.refreshState()
+        }
+    }
+    
+    func refreshConfig() {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            var enabled = true
+            if FileManager.default.fileExists(atPath: self.configFileURL.path),
+               let data = try? Data(contentsOf: self.configFileURL),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let val = json["auto_clean_zip"] as? Bool {
+                enabled = val
+            }
+            DispatchQueue.main.async {
+                self.autoCleanZip = enabled
+            }
+        }
+    }
+    
+    func toggleAutoCleanZip() {
+        let newSetting = !autoCleanZip
+        autoCleanZip = newSetting
+        
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            var dict: [String: Any] = [
+                "auto_clean_zip": newSetting
+            ]
+            if FileManager.default.fileExists(atPath: self.configFileURL.path),
+               let data = try? Data(contentsOf: self.configFileURL),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                dict = json
+                dict["auto_clean_zip"] = newSetting
+            }
+            if let outData = try? JSONSerialization.data(withJSONObject: dict, options: [.prettyPrinted]) {
+                try? outData.write(to: self.configFileURL)
+            }
         }
     }
     
@@ -665,6 +708,60 @@ struct ContentView: View {
                             .stroke(Color.primary.opacity(0.06), lineWidth: 1)
                     )
                     
+                    // Auto-Clean ZIP Option Card (압축 시 무조건 적용)
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(alignment: .center, spacing: 10) {
+                            Image(systemName: "archivebox.circle.fill")
+                                .font(.title2)
+                                .foregroundColor(.blue)
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 6) {
+                                    Text("압축 시 무조건 적용 (Auto-Clean ZIP)")
+                                        .font(.headline)
+                                    Text("권장")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundColor(.white)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(Capsule().fill(Color.blue))
+                                }
+                                Text("Finder 기본 압축 및 신규 ZIP 생성 시 UTF-8 헤더(0x0800)와 완성형 한글을 자동 각인합니다.")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
+                            Toggle("", isOn: Binding(
+                                get: { state.autoCleanZip },
+                                set: { _ in state.toggleAutoCleanZip() }
+                            ))
+                            .toggleStyle(.switch)
+                        }
+                        
+                        HStack(spacing: 8) {
+                            Circle()
+                                .fill(state.autoCleanZip ? Color.blue : Color.secondary.opacity(0.5))
+                                .frame(width: 7, height: 7)
+                            Text(state.autoCleanZip ? "🟢 활성화: 새로 생성되는 모든 .zip 파일에 윈도우 호환 규격이 상시 자동 적용됩니다." : "⚪️ 비활성화: 압축 파일 자동 패치를 건너뜁니다.")
+                                .font(.caption)
+                                .foregroundColor(state.autoCleanZip ? .primary : .secondary)
+                        }
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(state.autoCleanZip ? Color.blue.opacity(0.08) : Color.primary.opacity(0.04))
+                        )
+                    }
+                    .padding(16)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(Color(NSColor.controlBackgroundColor))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+                    )
+                    
                     // Deep Scan Card (기존 파일 전수 수복)
                     VStack(alignment: .leading, spacing: 12) {
                         HStack(alignment: .center, spacing: 10) {
@@ -1066,16 +1163,27 @@ struct AuditRowView: View {
         entry.status == "SUCCESS"
     }
     
+    var isZip: Bool {
+        entry.sourceType.contains("ZIP") || entry.originalPath.hasSuffix(".zip")
+    }
+    
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
-            Image(systemName: isSuccess ? "checkmark.circle.fill" : "xmark.octagon.fill")
-                .foregroundColor(isSuccess ? .green : .red)
+            Image(systemName: isZip ? "archivebox.circle.fill" : (isSuccess ? "checkmark.circle.fill" : "xmark.octagon.fill"))
+                .foregroundColor(isZip ? .blue : (isSuccess ? .green : .red))
                 .font(.system(size: 15))
                 .padding(.top, 2)
             
             VStack(alignment: .leading, spacing: 3) {
                 HStack(alignment: .center, spacing: 6) {
-                    if isSuccess {
+                    if isZip {
+                        Text(entry.originalName)
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                        Text("➔ \(entry.targetName)")
+                            .font(.caption)
+                            .foregroundColor(.blue)
+                    } else if isSuccess {
                         Text(entry.originalName)
                             .font(.subheadline)
                             .foregroundColor(.secondary)

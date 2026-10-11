@@ -1,4 +1,4 @@
-.PHONY: all build app install uninstall test clean
+.PHONY: all build app install uninstall test sim clean
 
 all: build app
 
@@ -16,7 +16,10 @@ install:
 uninstall:
 	@bash uninstall.sh
 
-test:
+sim:
+	@python3 tests/hermetic_subcutaneous_simulation.py
+
+test: sim
 	@echo "🧪 기능 테스트 실행 중 (실시간 데몬 + 전수 스캔)..."
 	@python3 -c '\
 import time, unicodedata, os, subprocess, shutil; \

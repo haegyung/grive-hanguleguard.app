@@ -148,22 +148,23 @@ func safeRenameToNFC(path: String) -> Bool {
 // MARK: - Crash Recovery & Sweep
 
 func recoverOrphanTempFiles(at rootPath: String) {
-    let rootURL = URL(fileURLWithPath: rootPath)
-    guard let enumerator = fm.enumerator(at: rootURL, includingPropertiesForKeys: nil) else { return }
-    for case let fileURL as URL in enumerator {
-        let name = fileURL.lastPathComponent
-        if name.hasPrefix(".__nfc_tmp_") {
-            let parts = name.components(separatedBy: "_")
-            if parts.count >= 5 {
-                let targetName = parts[4...].joined(separator: "_")
-                let parentPath = (fileURL.path as NSString).deletingLastPathComponent
-                let finalPath = "\(parentPath)/\(targetName)"
+    guard let subpaths = try? fm.subpathsOfDirectory(atPath: rootPath) else { return }
+    let prefix = ".__nfc_tmp_"
+    for sub in subpaths {
+        let name = (sub as NSString).lastPathComponent
+        if name.hasPrefix(prefix) {
+            let remainder = String(name.dropFirst(prefix.count))
+            if let firstUnderscore = remainder.firstIndex(of: "_") {
+                let targetName = String(remainder[remainder.index(after: firstUnderscore)...])
+                let fullPath = (rootPath as NSString).appendingPathComponent(sub)
+                let parentPath = (fullPath as NSString).deletingLastPathComponent
+                let finalPath = (parentPath as NSString).appendingPathComponent(targetName)
                 if !fm.fileExists(atPath: finalPath) {
-                    if rename(fileURL.path, finalPath) == 0 {
+                    if rename(fullPath, finalPath) == 0 {
                         log("Crash recovery restored: '\(name)' -> '\(targetName)'")
                     }
                 } else {
-                    unlink(fileURL.path)
+                    unlink(fullPath)
                     log("Cleaned stale redundant temp file: '\(name)'")
                 }
             }
@@ -290,6 +291,10 @@ func runScanCommand(args: [String]) {
         
         print("\n📂 대상 디렉터리: \(path)")
         
+        if !isDryRun {
+            recoverOrphanTempFiles(at: path)
+        }
+        
         let rootURL = URL(fileURLWithPath: path)
         guard let enumerator = fm.enumerator(
             at: rootURL,
@@ -403,6 +408,17 @@ func patchZipUTF8(zipPath: String) -> Bool {
     return false
 }
 
+func cleanJunkFiles(at rootPath: String) {
+    guard let subpaths = try? fm.subpathsOfDirectory(atPath: rootPath) else { return }
+    for sub in subpaths {
+        let name = (sub as NSString).lastPathComponent
+        if name == ".DS_Store" || name.hasPrefix("._") {
+            let fullPath = (rootPath as NSString).appendingPathComponent(sub)
+            try? fm.removeItem(atPath: fullPath)
+        }
+    }
+}
+
 func runZipCommand(args: [String]) {
     guard !args.isEmpty else {
         showNotification(title: "압축 실패", subtitle: "선택된 파일이나 폴더가 없습니다.")
@@ -412,17 +428,19 @@ func runZipCommand(args: [String]) {
     let validPaths = args
         .map { ($0 as NSString).expandingTildeInPath }
         .filter { fm.fileExists(atPath: $0) }
+        .filter { ($0 as NSString).lastPathComponent != ".DS_Store" }
     
     guard !validPaths.isEmpty else {
         showNotification(title: "압축 실패", subtitle: "유효한 파일이 없습니다.")
         exit(1)
     }
     
-    // 1. Pre-normalize all targets to NFC
+    // 1. Pre-normalize all targets to NFC & strip OS junk (.DS_Store, ._*)
     for path in validPaths {
         var isDir: ObjCBool = false
         fm.fileExists(atPath: path, isDirectory: &isDir)
         if isDir.boolValue {
+            cleanJunkFiles(at: path)
             sweepDirectory(rootPath: path)
             let name = (path as NSString).lastPathComponent
             if isDecomposed(name) {

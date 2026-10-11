@@ -1,11 +1,14 @@
-.PHONY: all build install uninstall test clean
+.PHONY: all build app install uninstall test clean
 
-all: build
+all: build app
 
 build:
 	@echo "🔨 Swift 네이티브 바이너리 빌드 중..."
 	swiftc -O src/nfc_watcher.swift -o bin/nfc_watcher
 	@echo "✅ 빌드 완료: bin/nfc_watcher"
+
+app:
+	@bash app/build_app.sh
 
 install:
 	@bash install.sh

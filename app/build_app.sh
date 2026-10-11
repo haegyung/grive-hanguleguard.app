@@ -29,6 +29,13 @@ swiftc -O \
 
 chmod +x "$MACOS_DIR/GriveHangulGuard"
 
+# 2.5 Copy AppIcon & Resources
+if [[ -f "$SCRIPT_DIR/Resources/AppIcon.icns" ]]; then
+    echo "  -> Apple 네이티브 앱 아이콘(icns) 주입 중..."
+    cp "$SCRIPT_DIR/Resources/AppIcon.icns" "$RESOURCES_DIR/AppIcon.icns"
+    cp "$SCRIPT_DIR/Resources/AppIcon_1024.png" "$RESOURCES_DIR/AppIcon.png"
+fi
+
 # 3. Create Info.plist
 echo "  -> Info.plist 메타데이터 생성 중..."
 cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
@@ -44,12 +51,16 @@ cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
 	<string>Grive한글가드</string>
 	<key>CFBundleDisplayName</key>
 	<string>Grive한글가드</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundleIconName</key>
+	<string>AppIcon</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0.0</string>
+	<string>1.0.2</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>2</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>12.0</string>
 	<key>NSHighResolutionCapable</key>

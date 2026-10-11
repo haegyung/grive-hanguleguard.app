@@ -168,7 +168,6 @@ class AppStateManager: ObservableObject {
             
             var success = false
             if FileManager.default.fileExists(atPath: finalURL.path) {
-                // Check if exact NFC
                 let exactName = (finalURL.path as NSString).lastPathComponent
                 if exactName.utf8.elementsEqual(nfcName.utf8) {
                     success = true
@@ -178,9 +177,9 @@ class AppStateManager: ObservableObject {
             
             DispatchQueue.main.async {
                 if success {
-                    self.testResult = "✅ 자가 진단 성공! 바탕화면 NFD 파일이 0.1초 만에 NFC로 결합되었습니다."
+                    self.testResult = "자가 진단 성공: 실시간 감시 엔진이 분리된 자모(NFD)를 즉시 완성형(NFC)으로 결합했습니다."
                 } else {
-                    self.testResult = "⚠️ 진단 실패: 데몬이 가동 중인지 확인해 주세요."
+                    self.testResult = "진단 실패: 데몬이 가동 중인지, 디스크 접근 권한이 활성화되었는지 확인해 주세요."
                 }
             }
         }
@@ -213,7 +212,7 @@ class AppStateManager: ObservableObject {
             let output = String(data: data, encoding: .utf8) ?? ""
             
             let lines = output.components(separatedBy: "\n")
-            let summary = lines.first(where: { $0.contains("스캔 완료") }) ?? "스캔이 완료되었습니다."
+            let summary = lines.first(where: { $0.contains("스캔 완료") }) ?? "스캔 및 수복 처리가 완료되었습니다."
             
             DispatchQueue.main.async {
                 self.isScanning = false
@@ -229,7 +228,7 @@ class AppStateManager: ObservableObject {
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         panel.prompt = "이 폴더 전수 수복"
-        panel.message = "기존 한글 자모 분리를 일괄 결합할 폴더를 선택하세요."
+        panel.message = "기존 한글 자모 분리를 일괄 결합할 폴더나 외장 드라이브를 선택하세요."
         
         if panel.runModal() == .OK, let selectedURL = panel.url {
             runDeepScan(targetPath: selectedURL.path)
@@ -271,26 +270,56 @@ struct PermissionHelper {
     }
 }
 
+// MARK: - Visual Header Icon Component
+
+struct AppHeaderIcon: View {
+    var body: some View {
+        let image: NSImage = {
+            if let path = Bundle.main.path(forResource: "AppIcon", ofType: "png"),
+               let img = NSImage(contentsOfFile: path) {
+                return img
+            }
+            if let path = Bundle.main.path(forResource: "AppIcon", ofType: "icns"),
+               let img = NSImage(contentsOfFile: path) {
+                return img
+            }
+            return NSApp.applicationIconImage ?? NSImage()
+        }()
+        
+        Image(nsImage: image)
+            .resizable()
+            .aspectRatio(contentMode: .fit)
+            .frame(width: 52, height: 52)
+            .clipShape(RoundedRectangle(cornerRadius: 11.5, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 11.5, style: .continuous)
+                    .stroke(Color.primary.opacity(0.12), lineWidth: 0.5)
+            )
+            .shadow(color: Color.black.opacity(0.12), radius: 3, x: 0, y: 1.5)
+    }
+}
+
 // MARK: - UI Views
 
 struct ContentView: View {
     @StateObject private var state = AppStateManager()
     
-    // Path to the repository root
     var projectDir: String {
-        // If running inside app bundle, check parent directory or default project path
-        let defaultPath = "/Volumes/Extend/Projects/DevWorkspace/macos-hangul-nfc-cleaner"
-        return defaultPath
+        if let bundleParent = Bundle.main.bundleURL.deletingLastPathComponent().path as String?,
+           FileManager.default.fileExists(atPath: "\(bundleParent)/install.sh") {
+            return bundleParent
+        }
+        return "/Volumes/Extend/Projects/DevWorkspace/macos-hangul-nfc-cleaner"
     }
     
     var body: some View {
         VStack(spacing: 0) {
             // Header
             HStack(spacing: 16) {
-                Text("🍏")
-                    .font(.system(size: 44))
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Grive 한글가드 (GriveHangulGuard)")
+                AppHeaderIcon()
+                
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Grive 한글가드")
                         .font(.title2)
                         .fontWeight(.bold)
                     Text("macOS 한글 자모 분리 방지 및 실시간 수복 관리자")
@@ -300,35 +329,46 @@ struct ContentView: View {
                 Spacer()
                 
                 // Status Badge
-                HStack(spacing: 6) {
+                HStack(spacing: 7) {
                     Circle()
                         .fill(state.isDaemonRunning ? Color.green : Color.red)
-                        .frame(width: 10, height: 10)
+                        .frame(width: 8, height: 8)
                     Text(state.isDaemonRunning ? "실시간 감시 중" : "중지됨")
                         .font(.callout)
-                        .fontWeight(.semibold)
+                        .fontWeight(.medium)
                         .foregroundColor(state.isDaemonRunning ? .green : .red)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
-                .background(RoundedRectangle(cornerRadius: 16).fill(Color(NSColor.windowBackgroundColor)))
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Color(NSColor.windowBackgroundColor))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
+                )
             }
-            .padding(20)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
             .background(Color(NSColor.controlBackgroundColor))
             
             Divider()
             
             // Content Scroll
             ScrollView {
-                VStack(spacing: 18) {
+                VStack(spacing: 16) {
                     // System Status Card
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("시스템 상주 상태")
-                            .font(.headline)
+                        HStack {
+                            Label("실시간 보호 상태", systemImage: "shield.lefthalf.filled")
+                                .font(.headline)
+                            Spacer()
+                        }
                         
                         HStack {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text("서비스 등록:")
+                                Text("서비스 등록 ID:")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                                 Text("com.grive.hangulguard")
@@ -353,7 +393,8 @@ struct ContentView: View {
                             Button(action: {
                                 state.toggleDaemon()
                             }) {
-                                Label(state.isDaemonRunning ? "일시 정지" : "감시 재개", systemImage: state.isDaemonRunning ? "pause.fill" : "play.fill")
+                                Label(state.isDaemonRunning ? "일시 정지" : "감시 재개",
+                                      systemImage: state.isDaemonRunning ? "pause.fill" : "play.fill")
                             }
                             .controlSize(.regular)
                             
@@ -366,25 +407,42 @@ struct ContentView: View {
                         }
                         
                         if let res = state.testResult {
-                            Text(res)
-                                .font(.callout)
-                                .foregroundColor(res.contains("성공") ? .green : .orange)
-                                .padding(8)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(RoundedRectangle(cornerRadius: 6).fill(Color(NSColor.windowBackgroundColor)))
+                            let isSuccess = res.contains("성공")
+                            HStack(alignment: .top, spacing: 8) {
+                                Image(systemName: isSuccess ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                                    .foregroundColor(isSuccess ? .green : .orange)
+                                    .font(.system(size: 14))
+                                    .padding(.top, 2)
+                                Text(res)
+                                    .font(.callout)
+                                    .foregroundColor(.primary)
+                            }
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(Color(NSColor.windowBackgroundColor))
+                            )
                         }
                     }
                     .padding(16)
-                    .background(RoundedRectangle(cornerRadius: 10).fill(Color(NSColor.controlBackgroundColor)))
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(Color(NSColor.controlBackgroundColor))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+                    )
                     
                     // Deep Scan Card (기존 파일 전수 수복)
                     VStack(alignment: .leading, spacing: 12) {
-                        HStack {
-                            Image(systemName: "wand.and.stars")
+                        HStack(alignment: .center, spacing: 10) {
+                            Image(systemName: "sparkles.rectangle.stack")
                                 .font(.title3)
-                                .foregroundColor(.purple)
+                                .foregroundColor(.accentColor)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text("기존 생성 파일 자모 전수 수복 (Deep Scan)")
+                                Text("기존 생성 파일 전수 수복 (Deep Scan)")
                                     .font(.headline)
                                 Text("실시간 감시 전 이미 분리된 파일(ㅂㅗㄱㅗㅅㅓ)이나 외장하드의 한글을 일괄 결합합니다.")
                                     .font(.caption)
@@ -396,7 +454,7 @@ struct ContentView: View {
                             Button(action: {
                                 state.runDeepScan(targetPath: nil)
                             }) {
-                                Label("기본 폴더 전수 수복", systemImage: "sparkles.rectangle.stack")
+                                Label("기본 폴더 전수 수복", systemImage: "arrow.triangle.2.circlepath")
                             }
                             .controlSize(.regular)
                             .disabled(state.isScanning || state.isWorking)
@@ -414,7 +472,7 @@ struct ContentView: View {
                             HStack(spacing: 10) {
                                 ProgressView()
                                     .controlSize(.small)
-                                Text("하위 디렉터리 내 모든 파일을 탐색하여 자모를 수복하고 있습니다...")
+                                Text("디렉터리 내 모든 파일을 탐색하여 자모를 정밀 수복하고 있습니다...")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                             }
@@ -422,52 +480,78 @@ struct ContentView: View {
                         }
                         
                         if let res = state.scanResult {
-                            Text(res)
-                                .font(.callout)
-                                .foregroundColor(.primary)
-                                .padding(8)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(RoundedRectangle(cornerRadius: 6).fill(Color(NSColor.windowBackgroundColor)))
+                            HStack(alignment: .top, spacing: 8) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(.green)
+                                    .font(.system(size: 14))
+                                    .padding(.top, 2)
+                                Text(res)
+                                    .font(.callout)
+                                    .foregroundColor(.primary)
+                            }
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(Color(NSColor.windowBackgroundColor))
+                            )
                         }
                     }
                     .padding(16)
-                    .background(RoundedRectangle(cornerRadius: 10).fill(Color(NSColor.controlBackgroundColor)))
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(Color(NSColor.controlBackgroundColor))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+                    )
                     
                     // Permissions Card
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("필수 시스템 권한 및 설정 점검")
+                        Label("시스템 필수 권한 및 설정 점검", systemImage: "slider.horizontal.3")
                             .font(.headline)
                         
-                        VStack(spacing: 8) {
+                        VStack(spacing: 10) {
                             PermissionRow(
-                                title: "1. 백그라운드 항목 등록",
-                                description: "맥 로그인 시 데몬이 자동으로 켜지도록 허용합니다.",
-                                buttonTitle: "로그인 항목 설정 열기",
+                                icon: "clock.arrow.circlepath",
+                                title: "1. 백그라운드 로그인 항목",
+                                description: "맥 로그인 시 감시 데몬이 자동으로 시작되도록 허용합니다.",
+                                buttonTitle: "로그인 항목 열기",
                                 action: { PermissionHelper.openLoginItems() }
                             )
                             Divider()
                             PermissionRow(
-                                title: "2. 파일 및 폴더 전체 접근 권한 (TCC)",
-                                description: "바탕화면, 다운로드 등의 자모를 실시간 수정할 수 있습니다.",
-                                buttonTitle: "디스크 접근 권한 열기",
+                                icon: "internaldrive",
+                                title: "2. 전체 디스크 접근 권한 (Full Disk Access)",
+                                description: "바탕화면, 다운로드 및 외장 드라이브의 한글 파일명을 실시간 수복합니다.",
+                                buttonTitle: "디스크 권한 열기",
                                 action: { PermissionHelper.openFullDiskAccess() }
                             )
                             Divider()
                             PermissionRow(
+                                icon: "contextualmenu.and.cursor",
                                 title: "3. Finder 빠른 동작 (우클릭 메뉴)",
-                                description: "우클릭 메뉴에 '한글 자모 결합', '윈도우 호환 압축'을 표시합니다.",
-                                buttonTitle: "확장 프로그램 설정 열기",
+                                description: "Finder 우클릭 메뉴의 '한글 자모 결합' 및 '윈도우 호환 압축'을 활성화합니다.",
+                                buttonTitle: "확장 프로그램 열기",
                                 action: { PermissionHelper.openQuickActionsExtensions() }
                             )
                         }
                     }
                     .padding(16)
-                    .background(RoundedRectangle(cornerRadius: 10).fill(Color(NSColor.controlBackgroundColor)))
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(Color(NSColor.controlBackgroundColor))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+                    )
                     
                     // Live Log Viewer
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
-                            Text("실시간 처리 로그 (최근 내역)")
+                            Label("실시간 처리 로그 (최근 내역)", systemImage: "terminal")
                                 .font(.headline)
                             Spacer()
                             Button("새로고침") {
@@ -494,10 +578,24 @@ struct ContentView: View {
                             .padding(10)
                         }
                         .frame(height: 120)
-                        .background(RoundedRectangle(cornerRadius: 6).fill(Color(NSColor.windowBackgroundColor)))
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(Color(NSColor.textBackgroundColor))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
+                        )
                     }
                     .padding(16)
-                    .background(RoundedRectangle(cornerRadius: 10).fill(Color(NSColor.controlBackgroundColor)))
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(Color(NSColor.controlBackgroundColor))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+                    )
                     
                     // Main Action Buttons
                     HStack(spacing: 16) {
@@ -507,7 +605,7 @@ struct ContentView: View {
                             HStack {
                                 Image(systemName: "arrow.down.circle.fill")
                                 Text("원클릭 시스템 전체 설치 및 가동")
-                                    .fontWeight(.bold)
+                                    .fontWeight(.semibold)
                             }
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 8)
@@ -538,17 +636,23 @@ struct ContentView: View {
 }
 
 struct PermissionRow: View {
+    let icon: String
     let title: String
     let description: String
     let buttonTitle: String
     let action: () -> Void
     
     var body: some View {
-        HStack {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 16, weight: .medium))
+                .foregroundColor(.accentColor)
+                .frame(width: 24, height: 24)
+            
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.subheadline)
-                    .fontWeight(.semibold)
+                    .fontWeight(.medium)
                 Text(description)
                     .font(.caption)
                     .foregroundColor(.secondary)

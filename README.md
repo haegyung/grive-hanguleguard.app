@@ -165,7 +165,10 @@ macos-hangul-nfc-cleaner/
     └── com.grive.hangulguard.plist.template
 ```
 
----
-
 ## 🛡️ 라이선스
-MIT License. 자유롭게 복제, 수정 및 배포가 가능합니다.
+
+이 프로젝트는 **Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)** 라이선스를 따릅니다.
+
+* **비영리 목적**: 자유롭게 복제, 배포, 전시, 공연 및 2차적 저작물 작성이 가능합니다.
+* **저작자 표시**: 원작자(`haegyung`) 및 프로젝트 출처를 명시해야 합니다.
+* **상업적 이용 불가**: 영리 목적의 상업적 이용 및 재판매는 허용되지 않습니다. (상업적 이용 문의: 저작자 문의)

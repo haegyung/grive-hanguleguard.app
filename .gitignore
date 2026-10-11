@@ -1,0 +1,8 @@
+.DS_Store
+*.swp
+*~
+.__nfc_tmp_*
+/build/
+.build/
+.AppleDouble
+.LSOverride

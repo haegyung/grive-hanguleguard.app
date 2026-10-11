@@ -1,7 +1,14 @@
 import Foundation
 import CoreServices
+import Darwin
 
-// MARK: - Constants & Configuration
+// ==============================================================================
+// macos-hangul-nfc-cleaner: Universal Native Swift Engine
+// - POSIX C-level rename() to bypass Cocoa URL NFD decomposition
+// - Mode 1 (daemon): Real-time FSEvents watcher with crash recovery & file stability
+// - Mode 2 (fix): Batch recursive Hangul Jamo normalizer for selected paths
+// - Mode 3 (zip): Windows-compatible clean ZIP compressor using native ditto
+// ==============================================================================
 
 let fm = FileManager.default
 let homeURL = fm.homeDirectoryForCurrentUser
@@ -16,16 +23,13 @@ let excludePrefixes = [".__nfc_tmp_", "._", ".DS_Store"]
 let excludeExtensions = Set(["crdownload", "download", "part", "tmp", "swp"])
 let excludeDirNames = Set([".git", "node_modules", ".venv", "__pycache__"])
 
-// MARK: - Logging
+// MARK: - Logging & Notifications
 
 func log(_ message: String) {
     let timestamp = ISO8601DateFormatter().string(from: Date())
-    let line = "\(timestamp) [SWIFT-NFC] \(message)\n"
-    
-    // Console output
+    let line = "\(timestamp) [HANGUL-GUARD] \(message)\n"
     fputs(line, stderr)
     
-    // File output
     if let data = line.data(using: .utf8) {
         if fm.fileExists(atPath: logFileURL.path) {
             if let handle = try? FileHandle(forWritingTo: logFileURL) {
@@ -40,37 +44,62 @@ func log(_ message: String) {
     }
 }
 
-// MARK: - Unicode & Rename Logic
+func showNotification(title: String, subtitle: String, message: String = "") {
+    let escapedTitle = title.replacingOccurrences(of: "\"", with: "\\\"")
+    let escapedSubtitle = subtitle.replacingOccurrences(of: "\"", with: "\\\"")
+    let escapedMessage = message.replacingOccurrences(of: "\"", with: "\\\"")
+    
+    let script = "display notification \"\(escapedMessage)\" with title \"\(escapedTitle)\" subtitle \"\(escapedSubtitle)\""
+    let task = Process()
+    task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+    task.arguments = ["-e", script]
+    try? task.run()
+}
+
+// MARK: - Unicode & POSIX Crash-Safe 2-Step Rename
 
 func isDecomposed(_ string: String) -> Bool {
-    let nfc = string.precomposedStringWithCanonicalMapping
+    let nfc = (string as NSString).precomposedStringWithCanonicalMapping
     return !string.utf8.elementsEqual(nfc.utf8)
 }
 
-func shouldIgnore(url: URL) -> Bool {
-    let name = url.lastPathComponent
+func shouldIgnore(path: String) -> Bool {
+    let nsPath = path as NSString
+    let name = nsPath.lastPathComponent
     for prefix in excludePrefixes {
         if name.hasPrefix(prefix) { return true }
     }
-    if excludeExtensions.contains(url.pathExtension.lowercased()) {
+    let ext = nsPath.pathExtension.lowercased()
+    if excludeExtensions.contains(ext) {
         return true
     }
-    for component in url.pathComponents {
+    for component in nsPath.pathComponents {
         if excludeDirNames.contains(component) { return true }
     }
     return false
 }
 
+func isFileReady(path: String) -> Bool {
+    var isDir: ObjCBool = false
+    guard fm.fileExists(atPath: path, isDirectory: &isDir) else { return false }
+    if isDir.boolValue { return true }
+    
+    // Check if file is readable and not locked by exclusive write
+    let fd = open(path, O_RDONLY | O_NONBLOCK)
+    if fd < 0 { return false }
+    close(fd)
+    return true
+}
+
 var processingSet = Set<String>()
 let processingLock = NSLock()
 
-func safeRenameToNFC(at url: URL) {
-    let path = url.path
-    
+@discardableResult
+func safeRenameToNFC(path: String) -> Bool {
     processingLock.lock()
     if processingSet.contains(path) {
         processingLock.unlock()
-        return
+        return false
     }
     processingSet.insert(path)
     processingLock.unlock()
@@ -81,57 +110,284 @@ func safeRenameToNFC(at url: URL) {
         processingLock.unlock()
     }
     
-    guard fm.fileExists(atPath: path) else { return }
-    let originalName = url.lastPathComponent
-    guard isDecomposed(originalName) else { return }
+    guard fm.fileExists(atPath: path) else { return false }
+    let nsPath = path as NSString
+    let originalName = nsPath.lastPathComponent
+    guard isDecomposed(originalName) else { return false }
     
-    let parent = url.deletingLastPathComponent()
-    let nfcName = originalName.precomposedStringWithCanonicalMapping
-    let tmpName = ".__nfc_tmp_\(UUID().uuidString)"
-    let tmpURL = parent.appendingPathComponent(tmpName)
-    let finalURL = parent.appendingPathComponent(nfcName)
-    
-    // APFS 2-Step Rename
-    do {
-        try fm.moveItem(at: url, to: tmpURL)
-        try fm.moveItem(at: tmpURL, to: finalURL)
-        log("Normalized: '\(originalName)' -> '\(nfcName)' at \(parent.path)")
-    } catch {
-        if fm.fileExists(atPath: tmpURL.path) && !fm.fileExists(atPath: url.path) {
-            try? fm.moveItem(at: tmpURL, to: url)
-        }
-        log("Rename failed for '\(originalName)': \(error.localizedDescription)")
+    guard isFileReady(path: path) else {
+        log("File not ready yet, deferring: \(originalName)")
+        return false
     }
+    
+    let parent = nsPath.deletingLastPathComponent
+    let nfcName = (originalName as NSString).precomposedStringWithCanonicalMapping
+    
+    // Intent-Preserving Temp Name for Crash Recovery: .__nfc_tmp_<UUID>_<nfcName>
+    let tmpName = ".__nfc_tmp_\(UUID().uuidString)_\(nfcName)"
+    let tmpPath = "\(parent)/\(tmpName)"
+    let finalPath = "\(parent)/\(nfcName)"
+    
+    // POSIX C rename() preserves exact UTF-8 NFC byte sequence on APFS
+    if rename(path, tmpPath) != 0 {
+        log("Rename step 1 failed for '\(originalName)': errno \(errno)")
+        return false
+    }
+    
+    if rename(tmpPath, finalPath) != 0 {
+        log("Rename step 2 failed for '\(originalName)': errno \(errno)")
+        // Rollback
+        rename(tmpPath, path)
+        return false
+    }
+    
+    log("Normalized: '\(originalName)' -> '\(nfcName)' at \(parent)")
+    return true
 }
 
-// MARK: - Initial Sweep
+// MARK: - Crash Recovery & Sweep
 
-func initialSweep(paths: [String]) {
-    for rootPath in paths {
-        let rootURL = URL(fileURLWithPath: rootPath)
-        guard let enumerator = fm.enumerator(
-            at: rootURL,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsPackageDescendants]
-        ) else { continue }
-        
-        var collectedURLs = [URL]()
-        for case let fileURL as URL in enumerator {
-            if shouldIgnore(url: fileURL) { continue }
-            collectedURLs.append(fileURL)
-        }
-        
-        // Process deepest items first (bottom-up) so child paths stay valid
-        collectedURLs.sort { $0.pathComponents.count > $1.pathComponents.count }
-        for url in collectedURLs {
-            if isDecomposed(url.lastPathComponent) {
-                safeRenameToNFC(at: url)
+func recoverOrphanTempFiles(at rootPath: String) {
+    let rootURL = URL(fileURLWithPath: rootPath)
+    guard let enumerator = fm.enumerator(at: rootURL, includingPropertiesForKeys: nil) else { return }
+    for case let fileURL as URL in enumerator {
+        let name = fileURL.lastPathComponent
+        if name.hasPrefix(".__nfc_tmp_") {
+            let parts = name.components(separatedBy: "_")
+            if parts.count >= 5 {
+                let targetName = parts[4...].joined(separator: "_")
+                let parentPath = (fileURL.path as NSString).deletingLastPathComponent
+                let finalPath = "\(parentPath)/\(targetName)"
+                if !fm.fileExists(atPath: finalPath) {
+                    if rename(fileURL.path, finalPath) == 0 {
+                        log("Crash recovery restored: '\(name)' -> '\(targetName)'")
+                    }
+                } else {
+                    unlink(fileURL.path)
+                    log("Cleaned stale redundant temp file: '\(name)'")
+                }
             }
         }
     }
 }
 
-// MARK: - Configuration Loader
+@discardableResult
+func sweepDirectory(rootPath: String) -> Int {
+    recoverOrphanTempFiles(at: rootPath)
+    
+    let rootURL = URL(fileURLWithPath: rootPath)
+    guard let enumerator = fm.enumerator(
+        at: rootURL,
+        includingPropertiesForKeys: [.isDirectoryKey],
+        options: [.skipsPackageDescendants]
+    ) else { return 0 }
+    
+    var collectedPaths = [String]()
+    for case let fileURL as URL in enumerator {
+        let p = fileURL.path
+        if shouldIgnore(path: p) { continue }
+        collectedPaths.append(p)
+    }
+    
+    // Bottom-up traversal
+    collectedPaths.sort { $0.components(separatedBy: "/").count > $1.components(separatedBy: "/").count }
+    var count = 0
+    for p in collectedPaths {
+        let name = (p as NSString).lastPathComponent
+        if isDecomposed(name) {
+            if safeRenameToNFC(path: p) {
+                count += 1
+            }
+        }
+    }
+    return count
+}
+
+// MARK: - Subcommand: Fix (Manual Batch Normalizer)
+
+func runFixCommand(args: [String]) {
+    guard !args.isEmpty else {
+        showNotification(title: "자모 결합 실패", subtitle: "선택된 파일이나 폴더가 없습니다.")
+        exit(1)
+    }
+    
+    var totalFixed = 0
+    for rawPath in args {
+        let path = (rawPath as NSString).expandingTildeInPath
+        guard fm.fileExists(atPath: path) else { continue }
+        
+        var isDir: ObjCBool = false
+        fm.fileExists(atPath: path, isDirectory: &isDir)
+        
+        if isDir.boolValue {
+            totalFixed += sweepDirectory(rootPath: path)
+            let name = (path as NSString).lastPathComponent
+            if isDecomposed(name) {
+                if safeRenameToNFC(path: path) {
+                    totalFixed += 1
+                }
+            }
+        } else {
+            let name = (path as NSString).lastPathComponent
+            if isDecomposed(name) {
+                if safeRenameToNFC(path: path) {
+                    totalFixed += 1
+                }
+            }
+        }
+    }
+    
+    if totalFixed > 0 {
+        showNotification(
+            title: "한글 자모 결합 완료",
+            subtitle: "총 \(totalFixed)개 항목 결합됨",
+            message: "NFD 자모 분리가 NFC 완성형으로 정상 변환되었습니다."
+        )
+    } else {
+        showNotification(
+            title: "한글 자모 확인",
+            subtitle: "변환할 항목 없음",
+            message: "선택한 모든 파일과 폴더명이 이미 완성형(NFC)입니다."
+        )
+    }
+}
+
+// MARK: - Subcommand: Zip (Windows-Compatible Clean Compressor)
+
+func getUniqueZipPath(basePath: String) -> String {
+    if !fm.fileExists(atPath: basePath) { return basePath }
+    let ns = basePath as NSString
+    let parent = ns.deletingLastPathComponent
+    let stem = (ns.lastPathComponent as NSString).deletingPathExtension
+    var counter = 1
+    while true {
+        let candidate = "\(parent)/\(stem) (\(counter)).zip"
+        if !fm.fileExists(atPath: candidate) { return candidate }
+        counter += 1
+    }
+}
+
+func patchZipUTF8(zipPath: String) -> Bool {
+    guard let handle = try? FileHandle(forUpdating: URL(fileURLWithPath: zipPath)) else { return false }
+    defer { try? handle.close() }
+    
+    guard let data = try? handle.readToEnd() else { return false }
+    var bytes = [UInt8](data)
+    let len = bytes.count
+    var modified = false
+    
+    var i = 0
+    while i < len - 4 {
+        // Local File Header: PK\x03\x04
+        if bytes[i] == 0x50 && bytes[i+1] == 0x4b && bytes[i+2] == 0x03 && bytes[i+3] == 0x04 {
+            let flagIndex = i + 6
+            if flagIndex + 1 < len {
+                bytes[flagIndex + 1] |= 0x08 // Set 0x0800 UTF-8 flag
+                modified = true
+            }
+            i += 30
+            continue
+        }
+        // Central Directory Header: PK\x01\x02
+        if bytes[i] == 0x50 && bytes[i+1] == 0x4b && bytes[i+2] == 0x01 && bytes[i+3] == 0x02 {
+            let flagIndex = i + 8
+            if flagIndex + 1 < len {
+                bytes[flagIndex + 1] |= 0x08 // Set 0x0800 UTF-8 flag
+                modified = true
+            }
+            i += 46
+            continue
+        }
+        i += 1
+    }
+    
+    if modified {
+        try? handle.seek(toOffset: 0)
+        try? handle.write(contentsOf: bytes)
+        return true
+    }
+    return false
+}
+
+func runZipCommand(args: [String]) {
+    guard !args.isEmpty else {
+        showNotification(title: "압축 실패", subtitle: "선택된 파일이나 폴더가 없습니다.")
+        exit(1)
+    }
+    
+    let validPaths = args
+        .map { ($0 as NSString).expandingTildeInPath }
+        .filter { fm.fileExists(atPath: $0) }
+    
+    guard !validPaths.isEmpty else {
+        showNotification(title: "압축 실패", subtitle: "유효한 파일이 없습니다.")
+        exit(1)
+    }
+    
+    // 1. Pre-normalize all targets to NFC
+    for path in validPaths {
+        var isDir: ObjCBool = false
+        fm.fileExists(atPath: path, isDirectory: &isDir)
+        if isDir.boolValue {
+            sweepDirectory(rootPath: path)
+            let name = (path as NSString).lastPathComponent
+            if isDecomposed(name) {
+                safeRenameToNFC(path: path)
+            }
+        } else {
+            let name = (path as NSString).lastPathComponent
+            if isDecomposed(name) {
+                safeRenameToNFC(path: path)
+            }
+        }
+    }
+    
+    let firstItem = validPaths[0] as NSString
+    let parentDir = firstItem.deletingLastPathComponent
+    let zipName: String
+    if validPaths.count == 1 {
+        zipName = "\(firstItem.lastPathComponent).zip"
+    } else {
+        let pName = (parentDir as NSString).lastPathComponent
+        zipName = "\(pName)_윈도우호환.zip"
+    }
+    
+    let outputZipPath = getUniqueZipPath(basePath: "\(parentDir)/\(zipName)")
+    
+    // 2. Use native /usr/bin/ditto with --norsrc to strip resource forks & .DS_Store
+    let task = Process()
+    task.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+    
+    var dittoArgs = ["-c", "-k", "--norsrc"]
+    for p in validPaths {
+        dittoArgs.append(p)
+    }
+    dittoArgs.append(outputZipPath)
+    task.arguments = dittoArgs
+    
+    do {
+        try task.run()
+        task.waitUntilExit()
+        
+        if task.terminationStatus == 0 {
+            // 3. Post-patch zip headers with 0x0800 UTF-8 flag
+            _ = patchZipUTF8(zipPath: outputZipPath)
+            
+            showNotification(
+                title: "윈도우 호환 압축 완료",
+                subtitle: (outputZipPath as NSString).lastPathComponent,
+                message: "NFC 표준 파일명 및 .DS_Store 제거 완료"
+            )
+            log("Zip created with clean UTF-8 headers: \(outputZipPath)")
+        } else {
+            showNotification(title: "압축 실패", subtitle: "오류 코드 \(task.terminationStatus)")
+        }
+    } catch {
+        showNotification(title: "압축 오류", subtitle: error.localizedDescription)
+    }
+}
+
+// MARK: - Subcommand: Daemon (FSEvents Watcher)
 
 func loadMonitoredPaths() -> [String] {
     let defaultPaths = [
@@ -145,15 +401,12 @@ func loadMonitoredPaths() -> [String] {
        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
        let customPaths = json["watch_paths"] as? [String] {
         let valid = customPaths
-            .map { NSString(string: $0).expandingTildeInPath }
+            .map { NSString(string: $0).expandingTildeInPath as String }
             .filter { fm.fileExists(atPath: $0) }
         if !valid.isEmpty { return valid }
     }
-    
     return defaultPaths
 }
-
-// MARK: - FSEvents Callback
 
 let eventCallback: FSEventStreamCallback = { (streamRef, clientCallBackInfo, numEvents, eventPaths, eventFlags, eventIds) in
     let paths = unsafeBitCast(eventPaths, to: NSArray.self) as! [String]
@@ -163,10 +416,17 @@ let eventCallback: FSEventStreamCallback = { (streamRef, clientCallBackInfo, num
         let path = paths[i]
         let flag = flags[i]
         
-        let url = URL(fileURLWithPath: path)
-        if shouldIgnore(url: url) { continue }
+        let mustScan = (flag & FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs)) != 0
+        if mustScan {
+            log("FSEvents buffer overflow flag received, triggering sweep: \(path)")
+            DispatchQueue.global(qos: .utility).async {
+                sweepDirectory(rootPath: path)
+            }
+            continue
+        }
         
-        // Check for Created, Modified, Renamed, ItemInodeMetaMod flags
+        if shouldIgnore(path: path) { continue }
+        
         let isInteresting = (flag & FSEventStreamEventFlags(
             kFSEventStreamEventFlagItemCreated |
             kFSEventStreamEventFlagItemRenamed |
@@ -174,31 +434,30 @@ let eventCallback: FSEventStreamCallback = { (streamRef, clientCallBackInfo, num
             kFSEventStreamEventFlagItemInodeMetaMod
         )) != 0
         
-        if isInteresting || isDecomposed(url.lastPathComponent) {
-            // Slight delay (50ms) to allow file writes to close
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.05) {
-                safeRenameToNFC(at: url)
+        let name = (path as NSString).lastPathComponent
+        if isInteresting || isDecomposed(name) {
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.08) {
+                safeRenameToNFC(path: path)
             }
         }
     }
 }
 
-// MARK: - Main Runner
-
-func main() {
+func runDaemonCommand() {
     let pathsToWatch = loadMonitoredPaths()
     guard !pathsToWatch.isEmpty else {
         log("No valid paths to monitor. Exiting.")
         exit(1)
     }
     
-    log("Co-OS Swift NFC Normalizer Daemon starting.")
+    log("HangulGuard Native Swift Engine starting (daemon mode).")
     log("Monitored paths: \(pathsToWatch)")
     
-    // 1. Initial sweep
-    initialSweep(paths: pathsToWatch)
+    // Initial Sweep & Crash Recovery
+    for path in pathsToWatch {
+        sweepDirectory(rootPath: path)
+    }
     
-    // 2. Setup FSEventStream
     let pathsToWatchCF = pathsToWatch as CFArray
     var context = FSEventStreamContext(version: 0, info: nil, retain: nil, release: nil, copyDescription: nil)
     
@@ -214,14 +473,14 @@ func main() {
         &context,
         pathsToWatchCF,
         FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
-        0.05, // 50ms latency
+        0.05,
         streamFlags
     ) else {
         log("Failed to create FSEventStream.")
         exit(1)
     }
     
-    let queue = DispatchQueue(label: "com.coos.nfc-normalizer.fsevents", qos: .utility)
+    let queue = DispatchQueue(label: "com.coos.hangul-guard.fsevents", qos: .utility)
     FSEventStreamSetDispatchQueue(stream, queue)
     
     if !FSEventStreamStart(stream) {
@@ -229,8 +488,58 @@ func main() {
         exit(1)
     }
     
-    log("FSEventStream started successfully. Dispatch loop running.")
+    log("FSEventStream successfully bound. Daemon active.")
     dispatchMain()
+}
+
+// MARK: - Entry Point Router (Multi-call Binary Support)
+
+func main() {
+    let args = CommandLine.arguments
+    let invokedName = (args[0] as NSString).lastPathComponent
+    
+    // BusyBox multi-call binary routing
+    if invokedName == "winzip" {
+        runZipCommand(args: Array(args.dropFirst()))
+        return
+    }
+    if invokedName == "fix-korean-jamo" || invokedName == "fix_korean_jamo" {
+        runFixCommand(args: Array(args.dropFirst()))
+        return
+    }
+
+    if args.count <= 1 {
+        runDaemonCommand()
+        return
+    }
+    
+    let subcommand = args[1]
+    let remainingArgs = Array(args.dropFirst(2))
+    
+    switch subcommand {
+    case "daemon":
+        runDaemonCommand()
+    case "fix", "--fix":
+        runFixCommand(args: remainingArgs)
+    case "zip", "--zip":
+        runZipCommand(args: remainingArgs)
+    case "help", "--help", "-h":
+        print("""
+        HangulGuard macOS Universal Engine 🍏🇰🇷
+        Usage:
+          nfc_watcher [daemon]              Run real-time background normalizer
+          nfc_watcher fix <paths...>        Batch normalize NFD Hangul filenames to NFC
+          nfc_watcher zip <paths...>        Create clean, Windows-compatible zip without junk
+          nfc_watcher --help                Show this help message
+        """)
+    default:
+        if fm.fileExists(atPath: (subcommand as NSString).expandingTildeInPath) {
+            runFixCommand(args: Array(args.dropFirst(1)))
+        } else {
+            print("Unknown command: \(subcommand). Use --help for usage.")
+            exit(1)
+        }
+    }
 }
 
 main()

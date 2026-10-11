@@ -59,7 +59,7 @@
 				<key>ActionParameters</key>
 				<dict>
 					<key>COMMAND_STRING</key>
-					<string>/usr/bin/python3 "{{HOME}}/.local/bin/finder-tools/fix_korean_jamo.py" "$@"</string>
+					<string>"{{HOME}}/.local/bin/finder-tools/nfc_watcher" fix "$@"</string>
 					<key>CheckedForUserDefaultShell</key>
 					<true/>
 					<key>inputMethod</key>

@@ -19,7 +19,9 @@ class AppStateManager: ObservableObject {
     private var timer: Timer?
     
     init() {
-        refreshState()
+        DispatchQueue.main.async { [weak self] in
+            self?.refreshState()
+        }
         timer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             self?.refreshState()
         }
@@ -30,56 +32,60 @@ class AppStateManager: ObservableObject {
     }
     
     func refreshState() {
-        // 1. Check daemon via launchctl
-        let task = Process()
-        let pipe = Pipe()
-        task.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        task.arguments = ["-c", "launchctl list | grep '\(plistLabel)'"]
-        task.standardOutput = pipe
-        task.standardError = FileHandle.nullDevice
-        
-        do {
-            try task.run()
-            task.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            if let output = String(data: data, encoding: .utf8), !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                let parts = output.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
-                if let pid = parts.first, pid != "-" {
-                    DispatchQueue.main.async {
-                        self.isDaemonRunning = true
-                        self.daemonPID = pid
-                        self.statusMessage = "실시간 감시 데몬이 정상 작동 중입니다."
-                    }
-                } else {
-                    DispatchQueue.main.async {
-                        self.isDaemonRunning = false
-                        self.daemonPID = "-"
-                        self.statusMessage = "데몬이 등록되어 있으나 현재 대기 중입니다."
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            
+            // 1. Check daemon via launchctl in background
+            let task = Process()
+            let pipe = Pipe()
+            task.executableURL = URL(fileURLWithPath: "/bin/zsh")
+            task.arguments = ["-c", "launchctl list | grep '\(self.plistLabel)'"]
+            task.standardOutput = pipe
+            task.standardError = FileHandle.nullDevice
+            
+            var running = false
+            var pid = "-"
+            var message = "실시간 감시 데몬이 설치되지 않았습니다."
+            
+            do {
+                try task.run()
+                task.waitUntilExit()
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                if let output = String(data: data, encoding: .utf8), !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    let parts = output.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+                    if let first = parts.first, first != "-" {
+                        running = true
+                        pid = first
+                        message = "실시간 감시 데몬이 정상 작동 중입니다."
+                    } else {
+                        running = false
+                        pid = "-"
+                        message = "데몬이 등록되어 있으나 현재 대기 중입니다."
                     }
                 }
-            } else {
-                DispatchQueue.main.async {
-                    self.isDaemonRunning = false
-                    self.daemonPID = "-"
-                    self.statusMessage = "실시간 감시 데몬이 설치되지 않았습니다."
+            } catch {
+                running = false
+                pid = "-"
+                message = "데몬 상태 확인 실패"
+            }
+            
+            // 2. Read latest logs in background
+            var latestLogs: [String] = []
+            if FileManager.default.fileExists(atPath: self.logURL.path) {
+                if let content = try? String(contentsOf: self.logURL, encoding: .utf8) {
+                    let lines = content.components(separatedBy: "\n")
+                        .map { $0.trimmingCharacters(in: .whitespaces) }
+                        .filter { !$0.isEmpty }
+                    latestLogs = Array(lines.suffix(15))
                 }
             }
-        } catch {
+            
             DispatchQueue.main.async {
-                self.isDaemonRunning = false
-                self.daemonPID = "-"
-            }
-        }
-        
-        // 2. Read latest logs
-        if FileManager.default.fileExists(atPath: logURL.path) {
-            if let content = try? String(contentsOf: logURL, encoding: .utf8) {
-                let lines = content.components(separatedBy: "\n")
-                    .map { $0.trimmingCharacters(in: .whitespaces) }
-                    .filter { !$0.isEmpty }
-                let latest = Array(lines.suffix(15))
-                DispatchQueue.main.async {
-                    self.logLines = latest
+                self.isDaemonRunning = running
+                self.daemonPID = pid
+                self.statusMessage = message
+                if !latestLogs.isEmpty {
+                    self.logLines = latestLogs
                 }
             }
         }

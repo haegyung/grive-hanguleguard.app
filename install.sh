@@ -22,8 +22,8 @@ clear 2>/dev/null || true
 
 echo -e "${CYAN}${BOLD}"
 echo "╔════════════════════════════════════════════════════════════════════════════╗"
-echo "║             🍏 macOS 한글 자모 분리 방지 올인원 솔루션 설치기              ║"
-echo "║                      (macos-hangul-nfc-cleaner)                            ║"
+echo "║             🍏 Grive한글가드 (GriveHangulGuard) 올인원 설치기              ║"
+echo "║             macOS 한글 자모 분리 방지 및 실시간 수복 관리자                ║"
 echo "╚════════════════════════════════════════════════════════════════════════════╝"
 echo -e "${RESET}"
 
@@ -43,7 +43,7 @@ echo ""
 # Permission Briefing
 echo -e "${YELLOW}${BOLD}📋 [사전 안내] 설치 중 필요한 시스템 권한 및 등록 항목:${RESET}"
 echo -e " 1. ${BOLD}백그라운드 항목 등록:${RESET} 맥 로그인 시 실시간 감시 데몬이 자동 실행됩니다."
-echo -e "    (macOS 13+에서는 '백그라운드 항목 추가됨' 시스템 알림이 뜰 수 있습니다)"
+echo -e "    (macOS 13+에서는 'Grive한글가드 백그라운드 항목 추가됨' 시스템 알림이 뜰 수 있습니다)"
 echo -e " 2. ${BOLD}폴더 감시 접근:${RESET} 바탕화면/다운로드/문서 폴더의 신규 한글 파일명을 감지합니다."
 echo -e " 3. ${BOLD}Finder 빠른 동작:${RESET} 마우스 우클릭 메뉴에 단축 도구가 등록됩니다."
 echo ""
@@ -57,7 +57,7 @@ TARGET_CONFIG_DIR="$HOME/.config/finder-tools"
 LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
 SERVICES_DIR="$HOME/Library/Services"
 LOCAL_BIN="$HOME/.local/bin"
-PLIST_LABEL="com.coos.korean-nfc-normalizer"
+PLIST_LABEL="com.grive.hangulguard"
 PLIST_TARGET="$LAUNCH_AGENTS_DIR/$PLIST_LABEL.plist"
 
 # ------------------------------------------------------------------------------

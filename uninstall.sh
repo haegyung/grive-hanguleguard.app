@@ -12,19 +12,22 @@ echo "============================================================"
 echo "  🗑️  macos-hangul-nfc-cleaner 제거를 시작합니다"
 echo "============================================================"
 
-PLIST_LABEL="com.coos.korean-nfc-normalizer"
+PLIST_LABEL="com.grive.hangulguard"
+LEGACY_LABEL="com.coos.korean-nfc-normalizer"
 PLIST_PATH="$HOME/Library/LaunchAgents/$PLIST_LABEL.plist"
+LEGACY_PLIST_PATH="$HOME/Library/LaunchAgents/$LEGACY_LABEL.plist"
 SERVICES_DIR="$HOME/Library/Services"
 LOCAL_BIN="$HOME/.local/bin"
 TARGET_BIN_DIR="$HOME/.local/bin/finder-tools"
 
-# 1. Stop and remove launchd agent
-if [[ -f "$PLIST_PATH" ]]; then
-    echo "🛑 백그라운드 데몬 중지 및 등록 해제 중..."
-    launchctl unload "$PLIST_PATH" 2>/dev/null || true
-    rm -f "$PLIST_PATH"
-    echo "  -> LaunchAgent plist 삭제 완료"
-fi
+# 1. Stop and remove launchd agents
+echo "🛑 백그라운드 데몬 중지 및 등록 해제 중..."
+launchctl bootout "gui/$(id -u)/$PLIST_LABEL" 2>/dev/null || launchctl unload "$PLIST_PATH" 2>/dev/null || true
+rm -f "$PLIST_PATH"
+
+launchctl bootout "gui/$(id -u)/$LEGACY_LABEL" 2>/dev/null || launchctl unload "$LEGACY_PLIST_PATH" 2>/dev/null || true
+rm -f "$LEGACY_PLIST_PATH"
+echo "  -> LaunchAgent plist 삭제 완료"
 
 # 2. Remove Quick Actions
 echo "🖱️  Finder 우클릭 빠른 동작(Quick Action) 제거 중..."

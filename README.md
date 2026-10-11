@@ -1,7 +1,7 @@
-# macos-hangul-nfc-cleaner 🍏🇰🇷
+# Grive한글가드 (GriveHangulGuard) 🍏🇰🇷
 
 > **macOS 한글 자모 분리(`ㅂㅗㄱㅗㅅㅓ`) 원천 방지 및 완성형(NFC) 자동 수복 올인원 솔루션**  
-> Swift 6.4 네이티브 초경량 데몬(FSEvents) + Finder 우클릭 빠른 동작(Quick Action) + CLI 유틸리티
+> Swift 6.4 네이티브 초경량 데몬(FSEvents) + 네이티브 관리 앱(`GriveHangulGuard.app`) + Finder 우클릭 빠른 동작 + CLI 도구
 
 ---
 
@@ -18,9 +18,9 @@ macOS에서 한글 파일이나 폴더를 만들 때, 파일시스템(APFS)은 �
 
 ---
 
-## 🖥️ 네이티브 GUI 앱 지원 (한글가드.app)
+## 🖥️ 네이티브 GUI 앱 지원 (GriveHangulGuard.app)
 
-터미널이나 명령어가 익숙하지 않은 사용자를 위해 **독립형 macOS GUI 관리 앱 (`HangulGuard.app`)**을 함께 제공합니다.
+터미널이나 명령어가 익숙하지 않은 사용자를 위해 **독립형 macOS GUI 관리 앱 (`GriveHangulGuard.app`)**을 함께 제공합니다.
 
 * **원클릭 설치 및 가동**: 버튼 클릭 한 번으로 모든 컴포넌트 설치 및 데몬 시작
 * **권한 점검 및 바로가기**: 로그인 항목, 전체 디스크 접근 권한(TCC), Finder 확장 권한을 앱에서 원클릭으로 열고 확인
@@ -28,8 +28,8 @@ macOS에서 한글 파일이나 폴더를 만들 때, 파일시스템(APFS)은 �
 * **자가 진단 테스트**: 버튼 클릭으로 실시간 NFD ➔ NFC 변환이 정상 작동하는지 즉시 검증
 
 ```bash
-# 앱 실행 (또는 Finder에서 HangulGuard.app 더블클릭)
-open HangulGuard.app
+# 앱 실행 (또는 Finder에서 GriveHangulGuard.app 더블클릭)
+open GriveHangulGuard.app
 ```
 
 ---

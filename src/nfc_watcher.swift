@@ -27,7 +27,7 @@ let excludeDirNames = Set([".git", "node_modules", ".venv", "__pycache__"])
 
 func log(_ message: String) {
     let timestamp = ISO8601DateFormatter().string(from: Date())
-    let line = "\(timestamp) [HANGUL-GUARD] \(message)\n"
+    let line = "\(timestamp) [GRIVE-HANGUL-GUARD] \(message)\n"
     fputs(line, stderr)
     
     if let data = line.data(using: .utf8) {
@@ -450,7 +450,7 @@ func runDaemonCommand() {
         exit(1)
     }
     
-    log("HangulGuard Native Swift Engine starting (daemon mode).")
+    log("GriveHangulGuard Native Swift Engine starting (daemon mode).")
     log("Monitored paths: \(pathsToWatch)")
     
     // Initial Sweep & Crash Recovery
@@ -480,7 +480,7 @@ func runDaemonCommand() {
         exit(1)
     }
     
-    let queue = DispatchQueue(label: "com.coos.hangul-guard.fsevents", qos: .utility)
+    let queue = DispatchQueue(label: "com.grive.hangulguard.fsevents", qos: .utility)
     FSEventStreamSetDispatchQueue(stream, queue)
     
     if !FSEventStreamStart(stream) {
@@ -525,7 +525,7 @@ func main() {
         runZipCommand(args: remainingArgs)
     case "help", "--help", "-h":
         print("""
-        HangulGuard macOS Universal Engine 🍏🇰🇷
+        GriveHangulGuard macOS Universal Engine 🍏🇰🇷
         Usage:
           nfc_watcher [daemon]              Run real-time background normalizer
           nfc_watcher fix <paths...>        Batch normalize NFD Hangul filenames to NFC

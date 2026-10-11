@@ -13,7 +13,7 @@ class AppStateManager: ObservableObject {
     
     private let logURL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".local/state/finder-tools/nfc_watcher.log")
-    private let plistLabel = "com.coos.korean-nfc-normalizer"
+    private let plistLabel = "com.grive.hangulguard"
     private var timer: Timer?
     
     init() {
@@ -232,10 +232,10 @@ struct ContentView: View {
                 Text("🍏")
                     .font(.system(size: 44))
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("한글가드 (HangulGuard)")
+                    Text("Grive 한글가드 (GriveHangulGuard)")
                         .font(.title2)
                         .fontWeight(.bold)
-                    Text("macOS 한글 자모 분리 방지 및 시스템 실시간 수복 관리자")
+                    Text("macOS 한글 자모 분리 방지 및 실시간 수복 관리자")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                 }
@@ -273,7 +273,7 @@ struct ContentView: View {
                                 Text("서비스 등록:")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
-                                Text("com.coos.korean-nfc-normalizer")
+                                Text("com.grive.hangulguard")
                                     .font(.system(.body, design: .monospaced))
                             }
                             Spacer()
@@ -461,7 +461,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             defer: false
         )
         window.center()
-        window.title = "한글가드 (HangulGuard)"
+        window.title = "Grive 한글가드 (GriveHangulGuard)"
         window.contentView = NSHostingView(rootView: contentView)
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)

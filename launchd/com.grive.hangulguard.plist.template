@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>com.coos.korean-nfc-normalizer</string>
+	<string>com.grive.hangulguard</string>
 	<key>ProgramArguments</key>
 	<array>
 		<string>{{HOME}}/.local/bin/finder-tools/nfc_watcher</string>

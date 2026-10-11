@@ -2,20 +2,20 @@
 set -e
 
 # ==============================================================================
-# Build Script for HangulGuard.app (macOS Native GUI Management App)
+# Build Script for GriveHangulGuard.app (macOS Native GUI Management App)
 # ==============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-APP_BUNDLE="$PROJECT_DIR/HangulGuard.app"
+APP_BUNDLE="$PROJECT_DIR/GriveHangulGuard.app"
 CONTENTS_DIR="$APP_BUNDLE/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 RESOURCES_DIR="$CONTENTS_DIR/Resources"
 
-echo "🔨 HangulGuard.app 번들 빌드를 시작합니다..."
+echo "🔨 GriveHangulGuard.app 번들 빌드를 시작합니다..."
 
-# 1. Clean previous bundle
-rm -rf "$APP_BUNDLE"
+# 1. Clean previous bundles
+rm -rf "$APP_BUNDLE" "$PROJECT_DIR/HangulGuard.app"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
 # 2. Compile SwiftUI App Binary
@@ -25,9 +25,9 @@ swiftc -O \
     -framework AppKit \
     -framework CoreServices \
     "$SCRIPT_DIR/src/main.swift" \
-    -o "$MACOS_DIR/HangulGuard"
+    -o "$MACOS_DIR/GriveHangulGuard"
 
-chmod +x "$MACOS_DIR/HangulGuard"
+chmod +x "$MACOS_DIR/GriveHangulGuard"
 
 # 3. Create Info.plist
 echo "  -> Info.plist 메타데이터 생성 중..."
@@ -37,13 +37,13 @@ cat << 'EOF' > "$CONTENTS_DIR/Info.plist"
 <plist version="1.0">
 <dict>
 	<key>CFBundleExecutable</key>
-	<string>HangulGuard</string>
+	<string>GriveHangulGuard</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.coos.hangulguard</string>
+	<string>com.grive.hangulguard</string>
 	<key>CFBundleName</key>
-	<string>한글가드</string>
+	<string>Grive한글가드</string>
 	<key>CFBundleDisplayName</key>
-	<string>한글가드</string>
+	<string>Grive한글가드</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -69,5 +69,5 @@ if command -v codesign >/dev/null 2>&1; then
     codesign -s - --force --deep "$APP_BUNDLE" >/dev/null 2>&1 || true
 fi
 
-echo "✅ HangulGuard.app 번들 빌드가 완료되었습니다!"
+echo "✅ GriveHangulGuard.app 번들 빌드가 완료되었습니다!"
 echo "   경로: $APP_BUNDLE"
